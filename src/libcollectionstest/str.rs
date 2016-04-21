@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::borrow::Cow;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::str::from_utf8;
 
@@ -270,6 +271,15 @@ fn test_replace_2d() {
 }
 
 #[test]
+fn test_replace_pattern() {
+    let data = "abcdαβγδabcdαβγδ";
+    assert_eq!(data.replace("dαβ", "😺😺😺"), "abc😺😺😺γδabc😺😺😺γδ");
+    assert_eq!(data.replace('γ', "😺😺😺"), "abcdαβ😺😺😺δabcdαβ😺😺😺δ");
+    assert_eq!(data.replace(&['a', 'γ'] as &[_], "😺😺😺"), "😺😺😺bcdαβ😺😺😺δ😺😺😺bcdαβ😺😺😺δ");
+    assert_eq!(data.replace(|c| c == 'γ', "😺😺😺"), "abcdαβ😺😺😺δabcdαβ😺😺😺δ");
+}
+
+#[test]
 fn test_slice() {
     assert_eq!("ab", &"abc"[0..2]);
     assert_eq!("bc", &"abc"[1..3]);
@@ -334,6 +344,42 @@ fn test_slice_2() {
 #[should_panic]
 fn test_slice_fail() {
     &"中华Việt Nam"[0..2];
+}
+
+
+#[test]
+fn test_is_char_boundary() {
+    let s = "ศไทย中华Việt Nam β-release 🐱123";
+    assert!(s.is_char_boundary(0));
+    assert!(s.is_char_boundary(s.len()));
+    assert!(!s.is_char_boundary(s.len() + 1));
+    for (i, ch) in s.char_indices() {
+        // ensure character locations are boundaries and continuation bytes are not
+        assert!(s.is_char_boundary(i), "{} is a char boundary in {:?}", i, s);
+        for j in 1..ch.len_utf8() {
+            assert!(!s.is_char_boundary(i + j),
+                    "{} should not be a char boundary in {:?}", i + j, s);
+        }
+    }
+}
+const LOREM_PARAGRAPH: &'static str = "\
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Suspendisse quis lorem sit amet dolor \
+ultricies condimentum. Praesent iaculis purus elit, ac malesuada quam malesuada in. Duis sed orci \
+eros. Suspendisse sit amet magna mollis, mollis nunc luctus, imperdiet mi. Integer fringilla non \
+sem ut lacinia. Fusce varius tortor a risus porttitor hendrerit. Morbi mauris dui, ultricies nec \
+tempus vel, gravida nec quam.";
+
+// check the panic includes the prefix of the sliced string
+#[test]
+#[should_panic(expected="Lorem ipsum dolor sit amet")]
+fn test_slice_fail_truncated_1() {
+    &LOREM_PARAGRAPH[..1024];
+}
+// check the truncation in the panic message
+#[test]
+#[should_panic(expected="luctus, im`[...] do not lie on character boundary")]
+fn test_slice_fail_truncated_2() {
+    &LOREM_PARAGRAPH[..1024];
 }
 
 #[test]
@@ -434,12 +480,14 @@ fn test_is_whitespace() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_slice_shift_char() {
     let data = "ประเทศไทย中";
     assert_eq!(data.slice_shift_char(), Some(('ป', "ระเทศไทย中")));
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_slice_shift_char_2() {
     let empty = "";
     assert_eq!(empty.slice_shift_char(), None);
@@ -468,6 +516,18 @@ fn test_is_utf8() {
     assert!(from_utf8(&[0xEF, 0xBF, 0xBF]).is_ok());
     assert!(from_utf8(&[0xF0, 0x90, 0x80, 0x80]).is_ok());
     assert!(from_utf8(&[0xF4, 0x8F, 0xBF, 0xBF]).is_ok());
+}
+
+#[test]
+fn from_utf8_mostly_ascii() {
+    // deny invalid bytes embedded in long stretches of ascii
+    for i in 32..64 {
+        let mut data = [0; 128];
+        data[i] = 0xC0;
+        assert!(from_utf8(&data).is_err());
+        data[i] = 0xC2;
+        assert!(from_utf8(&data).is_err());
+    }
 }
 
 #[test]
@@ -584,8 +644,6 @@ fn vec_str_conversions() {
     while i < n1 {
         let a: u8 = s1.as_bytes()[i];
         let b: u8 = s2.as_bytes()[i];
-        debug!("{}", a);
-        debug!("{}", b);
         assert_eq!(a, b);
         i += 1;
     }
@@ -617,6 +675,7 @@ fn test_contains_char() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_char_at() {
     let s = "ศไทย中华Việt Nam";
     let v = vec!['ศ','ไ','ท','ย','中','华','V','i','ệ','t',' ','N','a','m'];
@@ -628,6 +687,7 @@ fn test_char_at() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_char_at_reverse() {
     let s = "ศไทย中华Việt Nam";
     let v = vec!['ศ','ไ','ท','ย','中','华','V','i','ệ','t',' ','N','a','m'];
@@ -705,6 +765,7 @@ fn test_total_ord() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_char_range_at() {
     let data = "b¢€𤭢𤭢€¢b";
     assert_eq!('b', data.char_range_at(0).ch);
@@ -718,6 +779,7 @@ fn test_char_range_at() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_char_range_at_reverse_underflow() {
     assert_eq!("abc".char_range_at_reverse(0).next, 0);
 }
@@ -754,10 +816,9 @@ fn test_rev_iterator() {
 
 #[test]
 fn test_chars_decoding() {
-    let mut bytes = [0; 4];
     for c in (0..0x110000).filter_map(::std::char::from_u32) {
-        let len = c.encode_utf8(&mut bytes).unwrap_or(0);
-        let s = ::std::str::from_utf8(&bytes[..len]).unwrap();
+        let bytes = c.encode_utf8();
+        let s = ::std::str::from_utf8(bytes.as_slice()).unwrap();
         if Some(c) != s.chars().next() {
             panic!("character {:x}={} does not decode correctly", c as u32, c);
         }
@@ -766,10 +827,9 @@ fn test_chars_decoding() {
 
 #[test]
 fn test_chars_rev_decoding() {
-    let mut bytes = [0; 4];
     for c in (0..0x110000).filter_map(::std::char::from_u32) {
-        let len = c.encode_utf8(&mut bytes).unwrap_or(0);
-        let s = ::std::str::from_utf8(&bytes[..len]).unwrap();
+        let bytes = c.encode_utf8();
+        let s = ::std::str::from_utf8(bytes.as_slice()).unwrap();
         if Some(c) != s.chars().rev().next() {
             panic!("character {:x}={} does not decode correctly", c as u32, c);
         }
@@ -1246,6 +1306,16 @@ fn test_box_slice_clone() {
     assert_eq!(data, data2);
 }
 
+#[test]
+fn test_cow_from() {
+    let borrowed = "borrowed";
+    let owned = String::from("owned");
+    match (Cow::from(owned.clone()), Cow::from(borrowed)) {
+        (Cow::Owned(o), Cow::Borrowed(b)) => assert!(o == owned && b == borrowed),
+        _ => panic!("invalid `Cow::from`"),
+    }
+}
+
 mod pattern {
     use std::str::pattern::Pattern;
     use std::str::pattern::{Searcher, ReverseSearcher};
@@ -1474,6 +1544,19 @@ generate_iterator_test! {
         ("foo::bar::baz", 2, "::") -> ["baz", "foo::bar"];
     }
     with str::rsplitn;
+}
+
+#[test]
+fn different_str_pattern_forwarding_lifetimes() {
+    use std::str::pattern::Pattern;
+
+    fn foo<'a, P>(p: P) where for<'b> &'b P: Pattern<'a> {
+        for _ in 0..3 {
+            "asdf".find(&p);
+        }
+    }
+
+    foo::<&str>("x");
 }
 
 mod bench {

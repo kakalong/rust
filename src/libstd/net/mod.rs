@@ -74,7 +74,7 @@ fn each_addr<A: ToSocketAddrs, F, T>(addr: A, mut f: F) -> io::Result<T>
     where F: FnMut(&SocketAddr) -> io::Result<T>
 {
     let mut last_err = None;
-    for addr in try!(addr.to_socket_addrs()) {
+    for addr in addr.to_socket_addrs()? {
         match f(&addr) {
             Ok(l) => return Ok(l),
             Err(e) => last_err = Some(e),
@@ -127,15 +127,4 @@ impl Iterator for LookupHost {
            issue = "27705")]
 pub fn lookup_host(host: &str) -> io::Result<LookupHost> {
     net_imp::lookup_host(host).map(LookupHost)
-}
-
-/// Resolve the given address to a hostname.
-///
-/// This function may perform a DNS query to resolve `addr` and may also inspect
-/// system configuration to resolve the specified address. If the address
-/// cannot be resolved, it is returned in string format.
-#[unstable(feature = "lookup_addr", reason = "recent addition",
-           issue = "27705")]
-pub fn lookup_addr(addr: &IpAddr) -> io::Result<String> {
-    net_imp::lookup_addr(addr)
 }

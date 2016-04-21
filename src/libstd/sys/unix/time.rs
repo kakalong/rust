@@ -88,11 +88,11 @@ mod inner {
                         -> Result<Duration, Duration> {
             if self >= other {
                 Ok(if self.t.tv_usec >= other.t.tv_usec {
-                    Duration::new(self.t.tv_sec as u64 - other.t.tv_sec as u64,
-                                  (self.t.tv_usec as u32 -
-                                   other.t.tv_usec as u32) * 1000)
+                    Duration::new((self.t.tv_sec - other.t.tv_sec) as u64,
+                                  ((self.t.tv_usec -
+                                    other.t.tv_usec) as u32) * 1000)
                 } else {
-                    Duration::new(self.t.tv_sec as u64 - 1 - other.t.tv_sec as u64,
+                    Duration::new((self.t.tv_sec - 1 - other.t.tv_sec) as u64,
                                   (self.t.tv_usec as u32 + (USEC_PER_SEC as u32) -
                                    other.t.tv_usec as u32) * 1000)
                 })
@@ -111,7 +111,7 @@ mod inner {
             // Nano calculations can't overflow because nanos are <1B which fit
             // in a u32.
             let mut usec = (other.subsec_nanos() / 1000) + self.t.tv_usec as u32;
-            if usec > USEC_PER_SEC as u32 {
+            if usec >= USEC_PER_SEC as u32 {
                 usec -= USEC_PER_SEC as u32;
                 secs = secs.checked_add(1).expect("overflow when adding \
                                                    duration to time");
@@ -143,6 +143,12 @@ mod inner {
                     tv_usec: usec as libc::suseconds_t,
                 },
             }
+        }
+    }
+
+    impl From<libc::timeval> for SystemTime {
+        fn from(t: libc::timeval) -> SystemTime {
+            SystemTime { t: t }
         }
     }
 
@@ -282,6 +288,12 @@ mod inner {
         }
     }
 
+    impl From<libc::timespec> for SystemTime {
+        fn from(t: libc::timespec) -> SystemTime {
+            SystemTime { t: Timespec { t: t } }
+        }
+    }
+
     impl fmt::Debug for SystemTime {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             f.debug_struct("SystemTime")
@@ -291,8 +303,13 @@ mod inner {
         }
     }
 
+    #[cfg(not(target_os = "dragonfly"))]
+    pub type clock_t = libc::c_int;
+    #[cfg(target_os = "dragonfly")]
+    pub type clock_t = libc::c_ulong;
+
     impl Timespec {
-        pub fn now(clock: libc::c_int) -> Timespec {
+        pub fn now(clock: clock_t) -> Timespec {
             let mut t = Timespec {
                 t: libc::timespec {
                     tv_sec: 0,
@@ -330,7 +347,7 @@ mod inner {
             // Nano calculations can't overflow because nanos are <1B which fit
             // in a u32.
             let mut nsec = other.subsec_nanos() + self.t.tv_nsec as u32;
-            if nsec > NSEC_PER_SEC as u32 {
+            if nsec >= NSEC_PER_SEC as u32 {
                 nsec -= NSEC_PER_SEC as u32;
                 secs = secs.checked_add(1).expect("overflow when adding \
                                                    duration to time");

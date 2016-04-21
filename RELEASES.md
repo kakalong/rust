@@ -1,5 +1,1077 @@
+Version 1.9.0 (2016-05-26)
+==========================
+
+Language
+--------
+
+* The `#[deprecated]` attribute when applied to an API will generate
+  warnings when used. The warnings may be suppressed with
+  `#[allow(deprecated)]`. [RFC 1270].
+* [`fn` item types are zero sized, and each `fn` names a unique
+  type][1.9fn]. This will break code that transmutes `fn`s, so calling
+  `transmute` on a `fn` type will generate a warning for a few cycles,
+  then will be converted to an error.
+* [Field and method resolution understand visibility, so private
+  fields and methods cannot prevent the proper use of public fields
+  and methods][1.9fv].
+* [The parser considers unicode codepoints in the
+  `PATTERN_WHITE_SPACE` category to be whitespace][1.9ws].
+
+Stabilized APIs
+---------------
+
+* [`std::panic`]
+* [`std::panic::catch_unwind`][] (renamed from `recover`)
+* [`std::panic::resume_unwind`][] (renamed from `propagate`)
+* [`std::panic::AssertUnwindSafe`][] (renamed from `AssertRecoverSafe`)
+* [`std::panic::UnwindSafe`][] (renamed from `RecoverSafe`)
+* [`str::is_char_boundary`]
+* [`<*const T>::as_ref`]
+* [`<*mut T>::as_ref`]
+* [`<*mut T>::as_mut`]
+* [`AsciiExt::make_ascii_uppercase`]
+* [`AsciiExt::make_ascii_lowercase`]
+* [`char::decode_utf16`]
+* [`char::DecodeUtf16`]
+* [`char::DecodeUtf16Error`]
+* [`char::DecodeUtf16Error::unpaired_surrogate`]
+* [`BTreeSet::take`]
+* [`BTreeSet::replace`]
+* [`BTreeSet::get`]
+* [`HashSet::take`]
+* [`HashSet::replace`]
+* [`HashSet::get`]
+* [`OsString::with_capacity`]
+* [`OsString::clear`]
+* [`OsString::capacity`]
+* [`OsString::reserve`]
+* [`OsString::reserve_exact`]
+* [`OsStr::is_empty`]
+* [`OsStr::len`]
+* [`std::os::unix::thread`]
+* [`RawPthread`]
+* [`JoinHandleExt`]
+* [`JoinHandleExt::as_pthread_t`]
+* [`JoinHandleExt::into_pthread_t`]
+* [`HashSet::hasher`]
+* [`HashMap::hasher`]
+* [`CommandExt::exec`]
+* [`File::try_clone`]
+* [`SocketAddr::set_ip`]
+* [`SocketAddr::set_port`]
+* [`SocketAddrV4::set_ip`]
+* [`SocketAddrV4::set_port`]
+* [`SocketAddrV6::set_ip`]
+* [`SocketAddrV6::set_port`]
+* [`SocketAddrV6::set_flowinfo`]
+* [`SocketAddrV6::set_scope_id`]
+* [`slice::copy_from_slice`]
+* [`ptr::read_volatile`]
+* [`ptr::write_volatile`]
+* [`OpenOptions::create_new`]
+* [`TcpStream::set_nodelay`]
+* [`TcpStream::nodelay`]
+* [`TcpStream::set_ttl`]
+* [`TcpStream::ttl`]
+* [`TcpStream::set_only_v6`]
+* [`TcpStream::only_v6`]
+* [`TcpStream::take_error`]
+* [`TcpStream::set_nonblocking`]
+* [`TcpListener::set_ttl`]
+* [`TcpListener::ttl`]
+* [`TcpListener::set_only_v6`]
+* [`TcpListener::only_v6`]
+* [`TcpListener::take_error`]
+* [`TcpListener::set_nonblocking`]
+* [`UdpSocket::set_broadcast`]
+* [`UdpSocket::broadcast`]
+* [`UdpSocket::set_multicast_loop_v4`]
+* [`UdpSocket::multicast_loop_v4`]
+* [`UdpSocket::set_multicast_ttl_v4`]
+* [`UdpSocket::multicast_ttl_v4`]
+* [`UdpSocket::set_multicast_loop_v6`]
+* [`UdpSocket::multicast_loop_v6`]
+* [`UdpSocket::set_multicast_ttl_v6`]
+* [`UdpSocket::multicast_ttl_v6`]
+* [`UdpSocket::set_ttl`]
+* [`UdpSocket::ttl`]
+* [`UdpSocket::set_only_v6`]
+* [`UdpSocket::only_v6`]
+* [`UdpSocket::join_multicast_v4`]
+* [`UdpSocket::join_multicast_v6`]
+* [`UdpSocket::leave_multicast_v4`]
+* [`UdpSocket::leave_multicast_v6`]
+* [`UdpSocket::take_error`]
+* [`UdpSocket::connect`]
+* [`UdpSocket::send`]
+* [`UdpSocket::recv`]
+* [`UdpSocket::set_nonblocking`]
+
+Libraries
+---------
+
+* [`std::sync::Once` is poisoned if its initialization function
+  fails][1.9o].
+* [`cell::Ref` and `cell::RefMut` can contain unsized types][1.9cu].
+* [Most types implement `fmt::Debug`][1.9db].
+* [The default buffer size used by `BufReader` and `BufWriter` was
+  reduced to 8K, from 64K][1.9bf]. This is in line with the buffer size
+  used by other languages.
+* [`Instant`, `SystemTime` and `Duration` implement `+=` and `-=`.
+  `Duration` additionally implements `*=` and `/=`][1.9ta].
+* [`Skip` is a `DoubleEndedIterator`][1.9sk].
+* [`From<[u8; 4]>` is implemented for `Ipv4Addr`][1.9fi].
+* [`Chain` implements `BufRead`][1.9ch].
+* [`HashMap`, `HashSet` and iterators are covariant][1.9hc].
+
+Cargo
+-----
+
+* [Cargo can now run concurrently][1.9cc].
+* [Top-level overrides allow specific revisions of crates to be
+  overridden through the entire crate graph][1.9ct].  This is intended
+  to make upgrades easier for large projects, by allowing crates to be
+  forked temporarily until they've been upgraded and republished.
+* [Cargo exports a `CARGO_PKG_AUTHORS` environment variable][1.9cp].
+* [Cargo will pass the contents of the `RUSTFLAGS` variable to `rustc`
+  on the commandline][1.9cf]. `rustc` arguments can also be specified
+  in the `build.rustflags` configuration key.
+
+Performance
+-----------
+
+* [The time complexity of comparing variables for equivalence during type 
+  unification is reduced from _O_(_n_!) to _O_(_n_)][1.9tu]. This leads
+  to major compilation time improvement in some scenarios.
+* [`ToString` is specialized for `str`, giving it the same performance
+  as `to_owned`][1.9ts].
+* [Spawning processes with `Command::output` no longer creates extra
+  threads][1.9sp].
+* [`#[derive(PartialEq)]` and `#[derive(PartialOrd)]` emit less code
+  for C-like enums][1.9cl].
+
+Misc
+----
+
+* [Passing the `--quiet` flag to a test runner will produce
+  much-abbreviated output][1.9q].
+* The Rust Project now publishes std binaries for the
+  `mips-unknown-linux-musl`, `mipsel-unknown-linux-musl`, and
+  `i586-pc-windows-msvc` targets.
+
+Compatibility Notes
+-------------------
+
+* [`std::sync::Once` is poisoned if its initialization function
+  fails][1.9o].
+* [It is illegal to define methods with the same name in overlapping
+  inherent `impl` blocks][1.9sn].
+* [`fn` item types are zero sized, and each `fn` names a unique
+  type][1.9fn]. This will break code that transmutes `fn`s, so calling
+  `transmute` on a `fn` type will generate a warning for a few cycles,
+  then will be converted to an error.
+* [Improvements to const evaluation may trigger new errors when integer
+  literals are out of range][1.9ce].
+
+
+[1.9bf]: https://github.com/rust-lang/rust/pull/32695
+[1.9cc]: https://github.com/rust-lang/cargo/pull/2486
+[1.9ce]: https://github.com/rust-lang/rust/pull/30587
+[1.9cf]: https://github.com/rust-lang/cargo/pull/2241
+[1.9ch]: https://github.com/rust-lang/rust/pull/32541
+[1.9cl]: https://github.com/rust-lang/rust/pull/31977
+[1.9cp]: https://github.com/rust-lang/cargo/pull/2465
+[1.9ct]: https://github.com/rust-lang/cargo/pull/2385
+[1.9cu]: https://github.com/rust-lang/rust/pull/32652
+[1.9db]: https://github.com/rust-lang/rust/pull/32054
+[1.9fi]: https://github.com/rust-lang/rust/pull/32050
+[1.9fn]: https://github.com/rust-lang/rust/pull/31710
+[1.9fv]: https://github.com/rust-lang/rust/pull/31938
+[1.9hc]: https://github.com/rust-lang/rust/pull/32635
+[1.9o]: https://github.com/rust-lang/rust/pull/32325
+[1.9q]: https://github.com/rust-lang/rust/pull/31887
+[1.9sk]: https://github.com/rust-lang/rust/pull/31700
+[1.9sn]: https://github.com/rust-lang/rust/pull/31925
+[1.9sp]: https://github.com/rust-lang/rust/pull/31618
+[1.9ta]: https://github.com/rust-lang/rust/pull/32448
+[1.9ts]: https://github.com/rust-lang/rust/pull/32586
+[1.9tu]: https://github.com/rust-lang/rust/pull/32062
+[1.9ws]: https://github.com/rust-lang/rust/pull/29734
+[RFC 1270]: https://github.com/rust-lang/rfcs/blob/master/text/1270-deprecation.md
+[`<*const T>::as_ref`]: http://doc.rust-lang.org/nightly/std/primitive.pointer.html#method.as_ref
+[`<*mut T>::as_mut`]: http://doc.rust-lang.org/nightly/std/primitive.pointer.html#method.as_mut
+[`<*mut T>::as_ref`]: http://doc.rust-lang.org/nightly/std/primitive.pointer.html#method.as_ref
+[`slice::copy_from_slice`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.copy_from_slice
+[`AsciiExt::make_ascii_lowercase`]: http://doc.rust-lang.org/nightly/std/ascii/trait.AsciiExt.html#tymethod.make_ascii_lowercase
+[`AsciiExt::make_ascii_uppercase`]: http://doc.rust-lang.org/nightly/std/ascii/trait.AsciiExt.html#tymethod.make_ascii_uppercase
+[`BTreeSet::get`]: http://doc.rust-lang.org/nightly/collections/btree/set/struct.BTreeSet.html#method.get
+[`BTreeSet::replace`]: http://doc.rust-lang.org/nightly/collections/btree/set/struct.BTreeSet.html#method.replace
+[`BTreeSet::take`]: http://doc.rust-lang.org/nightly/collections/btree/set/struct.BTreeSet.html#method.take
+[`CommandExt::exec`]: http://doc.rust-lang.org/nightly/std/os/unix/process/trait.CommandExt.html#tymethod.exec
+[`File::try_clone`]: http://doc.rust-lang.org/nightly/std/fs/struct.File.html#method.try_clone
+[`HashMap::hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashMap.html#method.hasher
+[`HashSet::get`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.get
+[`HashSet::hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.hasher
+[`HashSet::replace`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.replace
+[`HashSet::take`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.take
+[`JoinHandleExt::as_pthread_t`]: http://doc.rust-lang.org/nightly/std/os/unix/thread/trait.JoinHandleExt.html#tymethod.as_pthread_t
+[`JoinHandleExt::into_pthread_t`]: http://doc.rust-lang.org/nightly/std/os/unix/thread/trait.JoinHandleExt.html#tymethod.into_pthread_t
+[`JoinHandleExt`]: http://doc.rust-lang.org/nightly/std/os/unix/thread/trait.JoinHandleExt.html
+[`OpenOptions::create_new`]: http://doc.rust-lang.org/nightly/std/fs/struct.OpenOptions.html#method.create_new
+[`OsStr::is_empty`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsStr.html#method.is_empty
+[`OsStr::len`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsStr.html#method.len
+[`OsString::capacity`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsString.html#method.capacity
+[`OsString::clear`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsString.html#method.clear
+[`OsString::reserve_exact`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsString.html#method.reserve_exact
+[`OsString::reserve`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsString.html#method.reserve
+[`OsString::with_capacity`]: http://doc.rust-lang.org/nightly/std/ffi/struct.OsString.html#method.with_capacity
+[`RawPthread`]: http://doc.rust-lang.org/nightly/std/os/unix/thread/type.RawPthread.html
+[`SocketAddr::set_ip`]: http://doc.rust-lang.org/nightly/std/net/enum.SocketAddr.html#method.set_ip
+[`SocketAddr::set_port`]: http://doc.rust-lang.org/nightly/std/net/enum.SocketAddr.html#method.set_port
+[`SocketAddrV4::set_ip`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV4.html#method.set_ip
+[`SocketAddrV4::set_port`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV4.html#method.set_port
+[`SocketAddrV6::set_flowinfo`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV6.html#method.set_flowinfo
+[`SocketAddrV6::set_ip`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV6.html#method.set_ip
+[`SocketAddrV6::set_port`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV6.html#method.set_port
+[`SocketAddrV6::set_scope_id`]: http://doc.rust-lang.org/nightly/std/net/struct.SocketAddrV6.html#method.set_scope_id
+[`TcpListener::only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.only_v6
+[`TcpListener::set_nonblocking`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_nonblocking
+[`TcpListener::set_only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_only_v6
+[`TcpListener::set_ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_ttl
+[`TcpListener::take_error`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.take_error
+[`TcpListener::ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.ttl
+[`TcpStream::nodelay`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.nodelay
+[`TcpStream::only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.only_v6
+[`TcpStream::set_nodelay`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_nodelay
+[`TcpStream::set_nonblocking`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_nonblocking
+[`TcpStream::set_only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_only_v6
+[`TcpStream::set_ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.set_ttl
+[`TcpStream::take_error`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.take_error
+[`TcpStream::ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.TcpStream.html#method.ttl
+[`UdpSocket::broadcast`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.broadcast
+[`UdpSocket::connect`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.connect
+[`UdpSocket::join_multicast_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.join_multicast_v4
+[`UdpSocket::join_multicast_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.join_multicast_v6
+[`UdpSocket::leave_multicast_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.leave_multicast_v4
+[`UdpSocket::leave_multicast_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.leave_multicast_v6
+[`UdpSocket::multicast_loop_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.multicast_loop_v4
+[`UdpSocket::multicast_loop_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.multicast_loop_v6
+[`UdpSocket::multicast_ttl_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.multicast_ttl_v4
+[`UdpSocket::multicast_ttl_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.multicast_ttl_v6
+[`UdpSocket::only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.only_v6
+[`UdpSocket::recv`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.recv
+[`UdpSocket::send`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.send
+[`UdpSocket::set_broadcast`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_broadcast
+[`UdpSocket::set_multicast_loop_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_multicast_loop_v4
+[`UdpSocket::set_multicast_loop_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_multicast_loop_v6
+[`UdpSocket::set_multicast_ttl_v4`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_multicast_ttl_v4
+[`UdpSocket::set_multicast_ttl_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_multicast_ttl_v6
+[`UdpSocket::set_nonblocking`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_nonblocking
+[`UdpSocket::set_only_v6`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_only_v6
+[`UdpSocket::set_ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.set_ttl
+[`UdpSocket::take_error`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.take_error
+[`UdpSocket::ttl`]: http://doc.rust-lang.org/nightly/std/net/struct.UdpSocket.html#method.ttl
+[`char::DecodeUtf16Error::unpaired_surrogate`]: http://doc.rust-lang.org/nightly/std/char/struct.DecodeUtf16Error.html#method.unpaired_surrogate
+[`char::DecodeUtf16Error`]: http://doc.rust-lang.org/nightly/std/char/struct.DecodeUtf16Error.html
+[`char::DecodeUtf16`]: http://doc.rust-lang.org/nightly/std/char/struct.DecodeUtf16.html
+[`char::decode_utf16`]: http://doc.rust-lang.org/nightly/std/char/fn.decode_utf16.html
+[`ptr::read_volatile`]: http://doc.rust-lang.org/nightly/std/ptr/fn.read_volatile.html
+[`ptr::write_volatile`]: http://doc.rust-lang.org/nightly/std/ptr/fn.write_volatile.html
+[`std::os::unix::thread`]: http://doc.rust-lang.org/nightly/std/os/unix/thread/index.html
+[`std::panic::AssertUnwindSafe`]: http://doc.rust-lang.org/nightly/std/panic/struct.AssertUnwindSafe.html
+[`std::panic::UnwindSafe`]: http://doc.rust-lang.org/nightly/std/panic/trait.UnwindSafe.html
+[`std::panic::catch_unwind`]: http://doc.rust-lang.org/nightly/std/panic/fn.catch_unwind.html
+[`std::panic::resume_unwind`]: http://doc.rust-lang.org/nightly/std/panic/fn.resume_unwind.html
+[`std::panic`]: http://doc.rust-lang.org/nightly/std/panic/index.html
+[`str::is_char_boundary`]: http://doc.rust-lang.org/nightly/std/primitive.str.html#method.is_char_boundary
+
+
+Version 1.8.0 (2016-04-14)
+==========================
+
+Language
+--------
+
+* Rust supports overloading of compound assignment statements like
+  `+=` by implementing the [`AddAssign`], [`SubAssign`],
+  [`MulAssign`], [`DivAssign`], [`RemAssign`], [`BitAndAssign`],
+  [`BitOrAssign`], [`BitXorAssign`], [`ShlAssign`], or [`ShrAssign`]
+  traits. [RFC 953].
+* Empty structs can be defined with braces, as in `struct Foo { }`, in
+  addition to the non-braced form, `struct Foo;`. [RFC 218].
+
+Libraries
+---------
+
+* Stabilized APIs:
+  * [`str::encode_utf16`][] (renamed from `utf16_units`)
+  * [`str::EncodeUtf16`][] (renamed from `Utf16Units`)
+  * [`Ref::map`]
+  * [`RefMut::map`]
+  * [`ptr::drop_in_place`]
+  * [`time::Instant`]
+  * [`time::SystemTime`]
+  * [`Instant::now`]
+  * [`Instant::duration_since`][] (renamed from `duration_from_earlier`)
+  * [`Instant::elapsed`]
+  * [`SystemTime::now`]
+  * [`SystemTime::duration_since`][] (renamed from `duration_from_earlier`)
+  * [`SystemTime::elapsed`]
+  * Various `Add`/`Sub` impls for `Time` and `SystemTime`
+  * [`SystemTimeError`]
+  * [`SystemTimeError::duration`]
+  * Various impls for `SystemTimeError`
+  * [`UNIX_EPOCH`]
+  * [`AddAssign`], [`SubAssign`], [`MulAssign`], [`DivAssign`],
+    [`RemAssign`], [`BitAndAssign`], [`BitOrAssign`],
+    [`BitXorAssign`], [`ShlAssign`], [`ShrAssign`].
+* [The `write!` and `writeln!` macros correctly emit errors if any of
+  their arguments can't be formatted][1.8w].
+* [Various I/O functions support large files on 32-bit Linux][1.8l].
+* [The Unix-specific `raw` modules, which contain a number of
+  redefined C types are deprecated][1.8r], including `os::raw::unix`,
+  `os::raw::macos`, and `os::raw::linux`. These modules defined types
+  such as `ino_t` and `dev_t`. The inconsistency of these definitions
+  across platforms was making it difficult to implement `std`
+  correctly. Those that need these definitions should use the `libc`
+  crate. [RFC 1415].
+* The Unix-specific `MetadataExt` traits, including
+  `os::unix::fs::MetadataExt`, which expose values such as inode
+  numbers [no longer return platform-specific types][1.8r], but
+  instead return widened integers. [RFC 1415].
+* [`btree_set::{IntoIter, Iter, Range}` are covariant][1.8cv].
+* [Atomic loads and stores are not volatile][1.8a].
+* [All types in `sync::mpsc` implement `fmt::Debug`][1.8mp].
+
+Performance
+-----------
+
+* [Inlining hash functions lead to a 3% compile-time improvement in
+  some workloads][1.8h].
+* When using jemalloc, its symbols are [unprefixed so that it
+  overrides the libc malloc implementation][1.8h]. This means that for
+  rustc, LLVM is now using jemalloc, which results in a 6%
+  compile-time improvement on a specific workload.
+* [Avoid quadratic growth in function size due to cleanups][1.8cu].
+
+Misc
+----
+
+* [32-bit MSVC builds finally implement unwinding][1.8ms].
+  i686-pc-windows-msvc is now considered a tier-1 platform.
+* [The `--print targets` flag prints a list of supported targets][1.8t].
+* [The `--print cfg` flag prints the `cfg`s defined for the current
+  target][1.8cf].
+* [`rustc` can be built with an new Cargo-based build system, written
+  in Rust][1.8b].  It will eventually replace Rust's Makefile-based
+  build system. To enable it configure with `configure --rustbuild`.
+* [Errors for non-exhaustive `match` patterns now list up to 3 missing
+  variants while also indicating the total number of missing variants
+  if more than 3][1.8m].
+* [Executable stacks are disabled on Linux and BSD][1.8nx].
+* The Rust Project now publishes binary releases of the standard
+  library for a number of tier-2 targets:
+  `armv7-unknown-linux-gnueabihf`, `powerpc-unknown-linux-gnu`,
+  `powerpc64-unknown-linux-gnu`, `powerpc64le-unknown-linux-gnu`
+  `x86_64-rumprun-netbsd`. These can be installed with
+  tools such as [multirust][1.8mr].
+
+Cargo
+-----
+
+* [`cargo init` creates a new Cargo project in the current
+  directory][1.8ci].  It is otherwise like `cargo new`.
+* [Cargo has configuration keys for `-v` and
+  `--color`][1.8cc]. `verbose` and `color`, respectively, go in the
+  `[term]` section of `.cargo/config`.
+* [Configuration keys that evaluate to strings or integers can be set
+  via environment variables][1.8ce]. For example the `build.jobs` key
+  can be set via `CARGO_BUILD_JOBS`. Environment variables take
+  precedence over config files.
+* [Target-specific dependencies support Rust `cfg` syntax for
+  describing targets][1.8cfg] so that dependencies for multiple
+  targets can be specified together. [RFC 1361].
+* [The environment variables `CARGO_TARGET_ROOT`, `RUSTC`, and
+  `RUSTDOC` take precedence over the `build.target-dir`,
+  `build.rustc`, and `build.rustdoc` configuration values][1.8cv].
+* [The child process tree is killed on Windows when Cargo is
+  killed][1.8ck].
+* [The `build.target` configuration value sets the target platform,
+  like `--target`][1.8ct].
+
+Compatibility Notes
+-------------------
+
+* [Unstable compiler flags have been further restricted][1.8u]. Since
+  1.0 `-Z` flags have been considered unstable, and other flags that
+  were considered unstable additionally required passing `-Z
+  unstable-options` to access. Unlike unstable language and library
+  features though, these options have been accessible on the stable
+  release channel. Going forward, *new unstable flags will not be
+  available on the stable release channel*, and old unstable flags
+  will warn about their usage. In the future, all unstable flags will
+  be unavailable on the stable release channel.
+* [It is no longer possible to `match` on empty enum variants using
+  the `Variant(..)` syntax][1.8v]. This has been a warning since 1.6.
+* The Unix-specific `MetadataExt` traits, including
+  `os::unix::fs::MetadataExt`, which expose values such as inode
+  numbers [no longer return platform-specific types][1.8r], but
+  instead return widened integers. [RFC 1415].
+* [Modules sourced from the filesystem cannot appear within arbitrary
+  blocks, but only within other modules][1.8mf].
+* [`--cfg` compiler flags are parsed strictly as identifiers][1.8c].
+* On Unix, [stack overflow triggers a runtime abort instead of a
+  SIGSEGV][1.8so].
+* [`Command::spawn` and its equivalents return an error if any of
+  its command-line arguments contain interior `NUL`s][1.8n].
+* [Tuple and unit enum variants from other crates are in the type
+  namespace][1.8tn].
+* [On Windows `rustc` emits `.lib` files for the `staticlib` library
+  type instead of `.a` files][1.8st]. Additionally, for the MSVC
+  toolchain, `rustc` emits import libraries named `foo.dll.lib`
+  instead of `foo.lib`.
+
+
+[1.8a]: https://github.com/rust-lang/rust/pull/30962
+[1.8b]: https://github.com/rust-lang/rust/pull/31123
+[1.8c]: https://github.com/rust-lang/rust/pull/31530
+[1.8cc]: https://github.com/rust-lang/cargo/pull/2397
+[1.8ce]: https://github.com/rust-lang/cargo/pull/2398
+[1.8cf]: https://github.com/rust-lang/rust/pull/31278
+[1.8cfg]: https://github.com/rust-lang/cargo/pull/2328
+[1.8ci]: https://github.com/rust-lang/cargo/pull/2081
+[1.8ck]: https://github.com/rust-lang/cargo/pull/2370
+[1.8ct]: https://github.com/rust-lang/cargo/pull/2335
+[1.8cu]: https://github.com/rust-lang/rust/pull/31390
+[1.8cv]: https://github.com/rust-lang/cargo/issues/2365
+[1.8cv]: https://github.com/rust-lang/rust/pull/30998
+[1.8h]: https://github.com/rust-lang/rust/pull/31460
+[1.8l]: https://github.com/rust-lang/rust/pull/31668
+[1.8m]: https://github.com/rust-lang/rust/pull/31020
+[1.8mf]: https://github.com/rust-lang/rust/pull/31534
+[1.8mp]: https://github.com/rust-lang/rust/pull/30894
+[1.8mr]: https://users.rust-lang.org/t/multirust-0-8-with-cross-std-installation/4901
+[1.8ms]: https://github.com/rust-lang/rust/pull/30448
+[1.8n]: https://github.com/rust-lang/rust/pull/31056
+[1.8nx]: https://github.com/rust-lang/rust/pull/30859
+[1.8r]: https://github.com/rust-lang/rust/pull/31551
+[1.8so]: https://github.com/rust-lang/rust/pull/31333
+[1.8st]: https://github.com/rust-lang/rust/pull/29520
+[1.8t]: https://github.com/rust-lang/rust/pull/31358
+[1.8tn]: https://github.com/rust-lang/rust/pull/30882
+[1.8u]: https://github.com/rust-lang/rust/pull/31793
+[1.8v]: https://github.com/rust-lang/rust/pull/31757
+[1.8w]: https://github.com/rust-lang/rust/pull/31904
+[RFC 1361]: https://github.com/rust-lang/rfcs/blob/master/text/1361-cargo-cfg-dependencies.md
+[RFC 1415]: https://github.com/rust-lang/rfcs/blob/master/text/1415-trim-std-os.md
+[RFC 218]: https://github.com/rust-lang/rfcs/blob/master/text/0218-empty-struct-with-braces.md
+[RFC 953]: https://github.com/rust-lang/rfcs/blob/master/text/0953-op-assign.md
+[`AddAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.AddAssign.html
+[`BitAndAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.BitAndAssign.html
+[`BitOrAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.BitOrAssign.html
+[`BitXorAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.BitXorAssign.html
+[`DivAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.DivAssign.html
+[`Instant::duration_since`]: http://doc.rust-lang.org/nightly/std/time/struct.Instant.html#method.duration_since
+[`Instant::elapsed`]: http://doc.rust-lang.org/nightly/std/time/struct.Instant.html#method.elapsed
+[`Instant::now`]: http://doc.rust-lang.org/nightly/std/time/struct.Instant.html#method.now
+[`MulAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.MulAssign.html
+[`Ref::map`]: http://doc.rust-lang.org/nightly/std/cell/struct.Ref.html#method.map
+[`RefMut::map`]: http://doc.rust-lang.org/nightly/std/cell/struct.RefMut.html#method.map
+[`RemAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.RemAssign.html
+[`ShlAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.ShlAssign.html
+[`ShrAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.ShrAssign.html
+[`SubAssign`]: http://doc.rust-lang.org/nightly/std/ops/trait.SubAssign.html
+[`SystemTime::duration_since`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html#method.duration_since
+[`SystemTime::elapsed`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html#method.elapsed
+[`SystemTime::now`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html#method.now
+[`SystemTimeError::duration`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTimeError.html#method.duration
+[`SystemTimeError`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTimeError.html
+[`UNIX_EPOCH`]: http://doc.rust-lang.org/nightly/std/time/constant.UNIX_EPOCH.html
+[`ptr::drop_in_place`]: http://doc.rust-lang.org/nightly/std/ptr/fn.drop_in_place.html
+[`str::EncodeUtf16`]: http://doc.rust-lang.org/nightly/std/str/struct.EncodeUtf16.html
+[`str::encode_utf16`]: http://doc.rust-lang.org/nightly/std/primitive.str.html#method.encode_utf16
+[`time::Instant`]: http://doc.rust-lang.org/nightly/std/time/struct.Instant.html
+[`time::SystemTime`]: http://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html
+
+
+Version 1.7.0 (2016-03-03)
+==========================
+
+Libraries
+---------
+
+* Stabilized APIs
+  * `Path`
+    * [`Path::strip_prefix`][] (renamed from relative_from)
+    * [`path::StripPrefixError`][] (new error type returned from strip_prefix)
+  * `Ipv4Addr`
+    * [`Ipv4Addr::is_loopback`]
+    * [`Ipv4Addr::is_private`]
+    * [`Ipv4Addr::is_link_local`]
+    * [`Ipv4Addr::is_multicast`]
+    * [`Ipv4Addr::is_broadcast`]
+    * [`Ipv4Addr::is_documentation`]
+  * `Ipv6Addr`
+    * [`Ipv6Addr::is_unspecified`]
+    * [`Ipv6Addr::is_loopback`]
+    * [`Ipv6Addr::is_multicast`]
+  * `Vec`
+    * [`Vec::as_slice`]
+    * [`Vec::as_mut_slice`]
+  * `String`
+    * [`String::as_str`]
+    * [`String::as_mut_str`]
+  * Slices
+    * `<[T]>::`[`clone_from_slice`], which now requires the two slices to
+    be the same length
+    * `<[T]>::`[`sort_by_key`]
+  * checked, saturated, and overflowing operations
+    * [`i32::checked_rem`], [`i32::checked_neg`], [`i32::checked_shl`], [`i32::checked_shr`]
+    * [`i32::saturating_mul`]
+    * [`i32::overflowing_add`], [`i32::overflowing_sub`], [`i32::overflowing_mul`], [`i32::overflowing_div`]
+    * [`i32::overflowing_rem`], [`i32::overflowing_neg`], [`i32::overflowing_shl`], [`i32::overflowing_shr`]
+    * [`u32::checked_rem`], [`u32::checked_neg`], [`u32::checked_shl`], [`u32::checked_shl`]
+    * [`u32::saturating_mul`]
+    * [`u32::overflowing_add`], [`u32::overflowing_sub`], [`u32::overflowing_mul`], [`u32::overflowing_div`]
+    * [`u32::overflowing_rem`], [`u32::overflowing_neg`], [`u32::overflowing_shl`], [`u32::overflowing_shr`]
+    * and checked, saturated, and overflowing operations for other primitive types
+  * FFI
+    * [`ffi::IntoStringError`]
+    * [`CString::into_string`]
+    * [`CString::into_bytes`]
+    * [`CString::into_bytes_with_nul`]
+    * `From<CString> for Vec<u8>`
+  * `IntoStringError`
+    * [`IntoStringError::into_cstring`]
+    * [`IntoStringError::utf8_error`]
+    * `Error for IntoStringError`
+  * Hashing
+    * [`std::hash::BuildHasher`]
+    * [`BuildHasher::Hasher`]
+    * [`BuildHasher::build_hasher`]
+    * [`std::hash::BuildHasherDefault`]
+    * [`HashMap::with_hasher`]
+    * [`HashMap::with_capacity_and_hasher`]
+    * [`HashSet::with_hasher`]
+    * [`HashSet::with_capacity_and_hasher`]
+    * [`std::collections::hash_map::RandomState`]
+    * [`RandomState::new`]
+* [Validating UTF-8 is faster by a factor of between 7 and 14x for
+  ASCII input][1.7utf8]. This means that creating `String`s and `str`s
+  from bytes is faster.
+* [The performance of `LineWriter` (and thus `io::stdout`) was
+  improved by using `memchr` to search for newlines][1.7m].
+* [`f32::to_degrees` and `f32::to_radians` are stable][1.7f]. The
+  `f64` variants were stabilized previously.
+* [`BTreeMap` was rewritten to use less memory and improve the performance
+  of insertion and iteration, the latter by as much as 5x][1.7bm].
+* [`BTreeSet` and its iterators, `Iter`, `IntoIter`, and `Range` are
+  covariant over their contained type][1.7bt].
+* [`LinkedList` and its iterators, `Iter` and `IntoIter` are covariant
+  over their contained type][1.7ll].
+* [`str::replace` now accepts a `Pattern`][1.7rp], like other string
+  searching methods.
+* [`Any` is implemented for unsized types][1.7a].
+* [`Hash` is implemented for `Duration`][1.7h].
+
+Misc
+----
+
+* [When running tests with `--test`, rustdoc will pass `--cfg`
+  arguments to the compiler][1.7dt].
+* [The compiler is built with RPATH information by default][1.7rpa].
+  This means that it will be possible to run `rustc` when installed in
+  unusual configurations without configuring the dynamic linker search
+  path explicitly.
+* [`rustc` passes `--enable-new-dtags` to GNU ld][1.7dta]. This makes
+  any RPATH entries (emitted with `-C rpath`) *not* take precedence
+  over `LD_LIBRARY_PATH`.
+
+Cargo
+-----
+
+* [`cargo rustc` accepts a `--profile` flag that runs `rustc` under
+  any of the compilation profiles, 'dev', 'bench', or 'test'][1.7cp].
+* [The `rerun-if-changed` build script directive no longer causes the
+  build script to incorrectly run twice in certain scenarios][1.7rr].
+
+Compatibility Notes
+-------------------
+
+* Soundness fixes to the interactions between associated types and
+  lifetimes, specified in [RFC 1214], [now generate errors][1.7sf] for
+  code that violates the new rules. This is a significant change that
+  is known to break existing code, so it has emitted warnings for the
+  new error cases since 1.4 to give crate authors time to adapt. The
+  details of what is changing are subtle; read the RFC for more.
+* [Several bugs in the compiler's visibility calculations were
+  fixed][1.7v]. Since this was found to break significant amounts of
+  code, the new errors will be emitted as warnings for several release
+  cycles, under the `private_in_public` lint.
+* Defaulted type parameters were accidentally accepted in positions
+  that were not intended. In this release, [defaulted type parameters
+  appearing outside of type definitions will generate a
+  warning][1.7d], which will become an error in future releases.
+* [Parsing "." as a float results in an error instead of 0][1.7p].
+  That is, `".".parse::<f32>()` returns `Err`, not `Ok(0.0)`.
+* [Borrows of closure parameters may not outlive the closure][1.7bc].
+
+[1.7a]: https://github.com/rust-lang/rust/pull/30928
+[1.7bc]: https://github.com/rust-lang/rust/pull/30341
+[1.7bm]: https://github.com/rust-lang/rust/pull/30426
+[1.7bt]: https://github.com/rust-lang/rust/pull/30998
+[1.7cp]: https://github.com/rust-lang/cargo/pull/2224
+[1.7d]: https://github.com/rust-lang/rust/pull/30724
+[1.7dt]: https://github.com/rust-lang/rust/pull/30372
+[1.7dta]: https://github.com/rust-lang/rust/pull/30394
+[1.7f]: https://github.com/rust-lang/rust/pull/30672
+[1.7h]: https://github.com/rust-lang/rust/pull/30818
+[1.7ll]: https://github.com/rust-lang/rust/pull/30663
+[1.7m]: https://github.com/rust-lang/rust/pull/30381
+[1.7p]: https://github.com/rust-lang/rust/pull/30681
+[1.7rp]: https://github.com/rust-lang/rust/pull/29498
+[1.7rpa]: https://github.com/rust-lang/rust/pull/30353
+[1.7rr]: https://github.com/rust-lang/cargo/pull/2279
+[1.7sf]: https://github.com/rust-lang/rust/pull/30389
+[1.7utf8]: https://github.com/rust-lang/rust/pull/30740
+[1.7v]: https://github.com/rust-lang/rust/pull/29973
+[RFC 1214]: https://github.com/rust-lang/rfcs/blob/master/text/1214-projections-lifetimes-and-wf.md
+[`BuildHasher::Hasher`]: http://doc.rust-lang.org/nightly/std/hash/trait.Hasher.html
+[`BuildHasher::build_hasher`]: http://doc.rust-lang.org/nightly/std/hash/trait.BuildHasher.html#tymethod.build_hasher
+[`CString::into_bytes_with_nul`]: http://doc.rust-lang.org/nightly/std/ffi/struct.CString.html#method.into_bytes_with_nul
+[`CString::into_bytes`]: http://doc.rust-lang.org/nightly/std/ffi/struct.CString.html#method.into_bytes
+[`CString::into_string`]: http://doc.rust-lang.org/nightly/std/ffi/struct.CString.html#method.into_string
+[`HashMap::with_capacity_and_hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashMap.html#method.with_capacity_and_hasher
+[`HashMap::with_hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashMap.html#method.with_hasher
+[`HashSet::with_capacity_and_hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.with_capacity_and_hasher
+[`HashSet::with_hasher`]: http://doc.rust-lang.org/nightly/std/collections/struct.HashSet.html#method.with_hasher
+[`IntoStringError::into_cstring`]: http://doc.rust-lang.org/nightly/std/ffi/struct.IntoStringError.html#method.into_cstring
+[`IntoStringError::utf8_error`]: http://doc.rust-lang.org/nightly/std/ffi/struct.IntoStringError.html#method.utf8_error
+[`Ipv4Addr::is_broadcast`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_broadcast
+[`Ipv4Addr::is_documentation`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_documentation
+[`Ipv4Addr::is_link_local`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_link_local
+[`Ipv4Addr::is_loopback`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_loopback
+[`Ipv4Addr::is_multicast`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_multicast
+[`Ipv4Addr::is_private`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv4Addr.html#method.is_private
+[`Ipv6Addr::is_loopback`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv6Addr.html#method.is_loopback
+[`Ipv6Addr::is_multicast`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv6Addr.html#method.is_multicast
+[`Ipv6Addr::is_unspecified`]: http://doc.rust-lang.org/nightly/std/net/struct.Ipv6Addr.html#method.is_unspecified
+[`Path::strip_prefix`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.strip_prefix
+[`RandomState::new`]: http://doc.rust-lang.org/nightly/std/collections/hash_map/struct.RandomState.html#method.new
+[`String::as_mut_str`]: http://doc.rust-lang.org/nightly/std/string/struct.String.html#method.as_mut_str
+[`String::as_str`]: http://doc.rust-lang.org/nightly/std/string/struct.String.html#method.as_str
+[`Vec::as_mut_slice`]: http://doc.rust-lang.org/nightly/std/vec/struct.Vec.html#method.as_mut_slice
+[`Vec::as_slice`]: http://doc.rust-lang.org/nightly/std/vec/struct.Vec.html#method.as_slice
+[`clone_from_slice`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.clone_from_slice
+[`ffi::IntoStringError`]: http://doc.rust-lang.org/nightly/std/ffi/struct.IntoStringError.html
+[`i32::checked_neg`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.checked_neg
+[`i32::checked_rem`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.checked_rem
+[`i32::checked_shl`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.checked_shl
+[`i32::checked_shr`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.checked_shr
+[`i32::overflowing_add`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_add
+[`i32::overflowing_div`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_div
+[`i32::overflowing_mul`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_mul
+[`i32::overflowing_neg`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_neg
+[`i32::overflowing_rem`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_rem
+[`i32::overflowing_shl`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_shl
+[`i32::overflowing_shr`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_shr
+[`i32::overflowing_sub`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.overflowing_sub
+[`i32::saturating_mul`]: http://doc.rust-lang.org/nightly/std/primitive.i32.html#method.saturating_mul
+[`path::StripPrefixError`]: http://doc.rust-lang.org/nightly/std/path/struct.StripPrefixError.html
+[`sort_by_key`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.sort_by_key
+[`std::collections::hash_map::RandomState`]: http://doc.rust-lang.org/nightly/std/collections/hash_map/struct.RandomState.html
+[`std::hash::BuildHasherDefault`]: http://doc.rust-lang.org/nightly/std/hash/struct.BuildHasherDefault.html
+[`std::hash::BuildHasher`]: http://doc.rust-lang.org/nightly/std/hash/trait.BuildHasher.html
+[`u32::checked_neg`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.checked_neg
+[`u32::checked_rem`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.checked_rem
+[`u32::checked_neg`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.checked_neg
+[`u32::checked_shl`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.checked_shl
+[`u32::overflowing_add`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_add
+[`u32::overflowing_div`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_div
+[`u32::overflowing_mul`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_mul
+[`u32::overflowing_neg`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_neg
+[`u32::overflowing_rem`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_rem
+[`u32::overflowing_shl`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_shl
+[`u32::overflowing_shr`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_shr
+[`u32::overflowing_sub`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.overflowing_sub
+[`u32::saturating_mul`]: http://doc.rust-lang.org/nightly/std/primitive.u32.html#method.saturating_mul
+
+
+Version 1.6.0 (2016-01-21)
+==========================
+
+Language
+--------
+
+* The `#![no_std]` attribute causes a crate to not be linked to the
+  standard library, but only the [core library][1.6co], as described
+  in [RFC 1184]. The core library defines common types and traits but
+  has no platform dependencies whatsoever, and is the basis for Rust
+  software in environments that cannot support a full port of the
+  standard library, such as operating systems. Most of the core
+  library is now stable.
+
+Libraries
+---------
+
+* Stabilized APIs:
+  [`Read::read_exact`],
+  [`ErrorKind::UnexpectedEof`][] (renamed from `UnexpectedEOF`),
+  [`fs::DirBuilder`], [`fs::DirBuilder::new`],
+  [`fs::DirBuilder::recursive`], [`fs::DirBuilder::create`],
+  [`os::unix::fs::DirBuilderExt`],
+  [`os::unix::fs::DirBuilderExt::mode`], [`vec::Drain`],
+  [`vec::Vec::drain`], [`string::Drain`], [`string::String::drain`],
+  [`vec_deque::Drain`], [`vec_deque::VecDeque::drain`],
+  [`collections::hash_map::Drain`],
+  [`collections::hash_map::HashMap::drain`],
+  [`collections::hash_set::Drain`],
+  [`collections::hash_set::HashSet::drain`],
+  [`collections::binary_heap::Drain`],
+  [`collections::binary_heap::BinaryHeap::drain`],
+  [`Vec::extend_from_slice`][] (renamed from `push_all`),
+  [`Mutex::get_mut`], [`Mutex::into_inner`], [`RwLock::get_mut`],
+  [`RwLock::into_inner`],
+  [`Iterator::min_by_key`][] (renamed from `min_by`),
+  [`Iterator::max_by_key`][] (renamed from `max_by`).
+* The [core library][1.6co] is stable, as are most of its APIs.
+* [The `assert_eq!` macro supports arguments that don't implement
+  `Sized`][1.6ae], such as arrays. In this way it behaves more like
+  `assert!`.
+* Several timer functions that take duration in milliseconds [are
+  deprecated in favor of those that take `Duration`][1.6ms]. These
+  include `Condvar::wait_timeout_ms`, `thread::sleep_ms`, and
+  `thread::park_timeout_ms`.
+* The algorithm by which `Vec` reserves additional elements was
+  [tweaked to not allocate excessive space][1.6a] while still growing
+  exponentially.
+* `From` conversions are [implemented from integers to floats][1.6f]
+  in cases where the conversion is lossless. Thus they are not
+  implemented for 32-bit ints to `f32`, nor for 64-bit ints to `f32`
+  or `f64`. They are also not implemented for `isize` and `usize`
+  because the implementations would be platform-specific. `From` is
+  also implemented from `f32` to `f64`.
+* `From<&Path>` and `From<PathBuf>` are implemented for `Cow<Path>`.
+* `From<T>` is implemented for `Box<T>`, `Rc<T>` and `Arc<T>`.
+* `IntoIterator` is implemented for `&PathBuf` and `&Path`.
+* [`BinaryHeap` was refactored][1.6bh] for modest performance
+  improvements.
+* Sorting slices that are already sorted [is 50% faster in some
+  cases][1.6s].
+
+Cargo
+-----
+
+* Cargo will look in `$CARGO_HOME/bin` for subcommands [by default][1.6c].
+* Cargo build scripts can specify their dependencies by emitting the
+  [`rerun-if-changed`][1.6rr] key.
+* crates.io will reject publication of crates with dependencies that
+  have a wildcard version constraint. Crates with wildcard
+  dependencies were seen to cause a variety of problems, as described
+  in [RFC 1241]. Since 1.5 publication of such crates has emitted a
+  warning.
+* `cargo clean` [accepts a `--release` flag][1.6cc] to clean the
+  release folder.  A variety of artifacts that Cargo failed to clean
+  are now correctly deleted.
+
+Misc
+----
+
+* The `unreachable_code` lint [warns when a function call's argument
+  diverges][1.6dv].
+* The parser indicates [failures that may be caused by
+  confusingly-similar Unicode characters][1.6uc]
+* Certain macro errors [are reported at definition time][1.6m], not
+  expansion.
+
+Compatibility Notes
+-------------------
+
+* The compiler no longer makes use of the [`RUST_PATH`][1.6rp]
+  environment variable when locating crates. This was a pre-cargo
+  feature for integrating with the package manager that was
+  accidentally never removed.
+* [A number of bugs were fixed in the privacy checker][1.6p] that
+  could cause previously-accepted code to break.
+* [Modules and unit/tuple structs may not share the same name][1.6ts].
+* [Bugs in pattern matching unit structs were fixed][1.6us]. The tuple
+  struct pattern syntax (`Foo(..)`) can no longer be used to match
+  unit structs. This is a warning now, but will become an error in
+  future releases. Patterns that share the same name as a const are
+  now an error.
+* A bug was fixed that causes [rustc not to apply default type
+  parameters][1.6xc] when resolving certain method implementations of
+  traits defined in other crates.
+
+[1.6a]: https://github.com/rust-lang/rust/pull/29454
+[1.6ae]: https://github.com/rust-lang/rust/pull/29770
+[1.6bh]: https://github.com/rust-lang/rust/pull/29811
+[1.6c]: https://github.com/rust-lang/cargo/pull/2192
+[1.6cc]: https://github.com/rust-lang/cargo/pull/2131
+[1.6co]: http://doc.rust-lang.org/beta/core/index.html
+[1.6dv]: https://github.com/rust-lang/rust/pull/30000
+[1.6f]: https://github.com/rust-lang/rust/pull/29129
+[1.6m]: https://github.com/rust-lang/rust/pull/29828
+[1.6ms]: https://github.com/rust-lang/rust/pull/29604
+[1.6p]: https://github.com/rust-lang/rust/pull/29726
+[1.6rp]: https://github.com/rust-lang/rust/pull/30034
+[1.6rr]: https://github.com/rust-lang/cargo/pull/2134
+[1.6s]: https://github.com/rust-lang/rust/pull/29675
+[1.6ts]: https://github.com/rust-lang/rust/issues/21546
+[1.6uc]: https://github.com/rust-lang/rust/pull/29837
+[1.6us]: https://github.com/rust-lang/rust/pull/29383
+[1.6xc]: https://github.com/rust-lang/rust/issues/30123
+[RFC 1184]: https://github.com/rust-lang/rfcs/blob/master/text/1184-stabilize-no_std.md
+[RFC 1241]: https://github.com/rust-lang/rfcs/blob/master/text/1241-no-wildcard-deps.md
+[`ErrorKind::UnexpectedEof`]: http://doc.rust-lang.org/nightly/std/io/enum.ErrorKind.html#variant.UnexpectedEof
+[`Iterator::max_by_key`]: http://doc.rust-lang.org/nightly/std/iter/trait.Iterator.html#method.max_by_key
+[`Iterator::min_by_key`]: http://doc.rust-lang.org/nightly/std/iter/trait.Iterator.html#method.min_by_key
+[`Mutex::get_mut`]: http://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html#method.get_mut
+[`Mutex::into_inner`]: http://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html#method.into_inner
+[`Read::read_exact`]: http://doc.rust-lang.org/nightly/std/io/trait.Read.html#method.read_exact
+[`RwLock::get_mut`]: http://doc.rust-lang.org/nightly/std/sync/struct.RwLock.html#method.get_mut
+[`RwLock::into_inner`]: http://doc.rust-lang.org/nightly/std/sync/struct.RwLock.html#method.into_inner
+[`Vec::extend_from_slice`]: http://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html#method.extend_from_slice
+[`collections::binary_heap::BinaryHeap::drain`]: http://doc.rust-lang.org/nightly/std/collections/binary_heap/struct.BinaryHeap.html#method.drain
+[`collections::binary_heap::Drain`]: http://doc.rust-lang.org/nightly/std/collections/binary_heap/struct.Drain.html
+[`collections::hash_map::Drain`]: http://doc.rust-lang.org/nightly/std/collections/hash_map/struct.Drain.html
+[`collections::hash_map::HashMap::drain`]: http://doc.rust-lang.org/nightly/std/collections/hash_map/struct.HashMap.html#method.drain
+[`collections::hash_set::Drain`]: http://doc.rust-lang.org/nightly/std/collections/hash_set/struct.Drain.html
+[`collections::hash_set::HashSet::drain`]: http://doc.rust-lang.org/nightly/std/collections/hash_set/struct.HashSet.html#method.drain
+[`fs::DirBuilder::create`]: http://doc.rust-lang.org/nightly/std/fs/struct.DirBuilder.html#method.create
+[`fs::DirBuilder::new`]: http://doc.rust-lang.org/nightly/std/fs/struct.DirBuilder.html#method.new
+[`fs::DirBuilder::recursive`]: http://doc.rust-lang.org/nightly/std/fs/struct.DirBuilder.html#method.recursive
+[`fs::DirBuilder`]: http://doc.rust-lang.org/nightly/std/fs/struct.DirBuilder.html
+[`os::unix::fs::DirBuilderExt::mode`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.DirBuilderExt.html#tymethod.mode
+[`os::unix::fs::DirBuilderExt`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.DirBuilderExt.html
+[`string::Drain`]: http://doc.rust-lang.org/nightly/std/string/struct.Drain.html
+[`string::String::drain`]: http://doc.rust-lang.org/nightly/std/string/struct.String.html#method.drain
+[`vec::Drain`]: http://doc.rust-lang.org/nightly/std/vec/struct.Drain.html
+[`vec::Vec::drain`]: http://doc.rust-lang.org/nightly/std/vec/struct.Vec.html#method.drain
+[`vec_deque::Drain`]: http://doc.rust-lang.org/nightly/std/collections/vec_deque/struct.Drain.html
+[`vec_deque::VecDeque::drain`]: http://doc.rust-lang.org/nightly/std/collections/vec_deque/struct.VecDeque.html#method.drain
+
+
+Version 1.5.0 (2015-12-10)
+==========================
+
+* ~700 changes, numerous bugfixes
+
+Highlights
+----------
+
+* Stabilized APIs:
+  [`BinaryHeap::from`], [`BinaryHeap::into_sorted_vec`],
+  [`BinaryHeap::into_vec`], [`Condvar::wait_timeout`],
+  [`FileTypeExt::is_block_device`], [`FileTypeExt::is_char_device`],
+  [`FileTypeExt::is_fifo`], [`FileTypeExt::is_socket`],
+  [`FileTypeExt`], [`Formatter::alternate`], [`Formatter::fill`],
+  [`Formatter::precision`], [`Formatter::sign_aware_zero_pad`],
+  [`Formatter::sign_minus`], [`Formatter::sign_plus`],
+  [`Formatter::width`], [`Iterator::cmp`], [`Iterator::eq`],
+  [`Iterator::ge`], [`Iterator::gt`], [`Iterator::le`],
+  [`Iterator::lt`], [`Iterator::ne`], [`Iterator::partial_cmp`],
+  [`Path::canonicalize`], [`Path::exists`], [`Path::is_dir`],
+  [`Path::is_file`], [`Path::metadata`], [`Path::read_dir`],
+  [`Path::read_link`], [`Path::symlink_metadata`],
+  [`Utf8Error::valid_up_to`], [`Vec::resize`],
+  [`VecDeque::as_mut_slices`], [`VecDeque::as_slices`],
+  [`VecDeque::insert`], [`VecDeque::shrink_to_fit`],
+  [`VecDeque::swap_remove_back`], [`VecDeque::swap_remove_front`],
+  [`slice::split_first_mut`], [`slice::split_first`],
+  [`slice::split_last_mut`], [`slice::split_last`],
+  [`char::from_u32_unchecked`], [`fs::canonicalize`],
+  [`str::MatchIndices`], [`str::RMatchIndices`],
+  [`str::match_indices`], [`str::rmatch_indices`],
+  [`str::slice_mut_unchecked`], [`string::ParseError`].
+* Rust applications hosted on crates.io can be installed locally to
+  `~/.cargo/bin` with the [`cargo install`] command. Among other
+  things this makes it easier to augment Cargo with new subcommands:
+  when a binary named e.g. `cargo-foo` is found in `$PATH` it can be
+  invoked as `cargo foo`.
+* Crates with wildcard (`*`) dependencies will [emit warnings when
+  published][1.5w]. In 1.6 it will no longer be possible to publish
+  crates with wildcard dependencies.
+
+Breaking Changes
+----------------
+
+* The rules determining when a particular lifetime must outlive
+  a particular value (known as '[dropck]') have been [modified
+  to not rely on parametricity][1.5p].
+* [Implementations of `AsRef` and `AsMut` were added to `Box`, `Rc`,
+  and `Arc`][1.5a]. Because these smart pointer types implement
+  `Deref`, this causes breakage in cases where the interior type
+  contains methods of the same name.
+* [Correct a bug in Rc/Arc][1.5c] that caused [dropck] to be unaware
+  that they could drop their content. Soundness fix.
+* All method invocations are [properly checked][1.5wf1] for
+  [well-formedness][1.5wf2]. Soundness fix.
+* Traits whose supertraits contain `Self` are [not object
+  safe][1.5o]. Soundness fix.
+* Target specifications support a [`no_default_libraries`][1.5nd]
+  setting that controls whether `-nodefaultlibs` is passed to the
+  linker, and in turn the `is_like_windows` setting no longer affects
+  the `-nodefaultlibs` flag.
+* `#[derive(Show)]`, long-deprecated, [has been removed][1.5ds].
+* The `#[inline]` and `#[repr]` attributes [can only appear
+  in valid locations][1.5at].
+* Native libraries linked from the local crate are [passed to
+  the linker before native libraries from upstream crates][1.5nl].
+* Two rarely-used attributes, `#[no_debug]` and
+  `#[omit_gdb_pretty_printer_section]` [are feature gated][1.5fg].
+* Negation of unsigned integers, which has been a warning for
+  several releases, [is now behind a feature gate and will
+  generate errors][1.5nu].
+* The parser accidentally accepted visibility modifiers on
+  enum variants, a bug [which has been fixed][1.5ev].
+* [A bug was fixed that allowed `use` statements to import unstable
+  features][1.5use].
+
+Language
+--------
+
+* When evaluating expressions at compile-time that are not
+  compile-time constants (const-evaluating expressions in non-const
+  contexts), incorrect code such as overlong bitshifts and arithmetic
+  overflow will [generate a warning instead of an error][1.5ce],
+  delaying the error until runtime. This will allow the
+  const-evaluator to be expanded in the future backwards-compatibly.
+* The `improper_ctypes` lint [no longer warns about using `isize` and
+  `usize` in FFI][1.5ict].
+
+Libraries
+---------
+
+* `Arc<T>` and `Rc<T>` are [covariant with respect to `T` instead of
+  invariant][1.5c].
+* `Default` is [implemented for mutable slices][1.5d].
+* `FromStr` is [implemented for `SockAddrV4` and `SockAddrV6`][1.5s].
+* There are now `From` conversions [between floating point
+  types][1.5f] where the conversions are lossless.
+* Thera are now `From` conversions [between integer types][1.5i] where
+  the conversions are lossless.
+* [`fs::Metadata` implements `Clone`][1.5fs].
+* The `parse` method [accepts a leading "+" when parsing
+  integers][1.5pi].
+* [`AsMut` is implemented for `Vec`][1.5am].
+* The `clone_from` implementations for `String` and `BinaryHeap` [have
+  been optimized][1.5cf] and no longer rely on the default impl.
+* The `extern "Rust"`, `extern "C"`, `unsafe extern "Rust"` and
+  `unsafe extern "C"` function types now [implement `Clone`,
+  `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `fmt::Pointer`, and
+  `fmt::Debug` for up to 12 arguments][1.5fp].
+* [Dropping `Vec`s is much faster in unoptimized builds when the
+  element types don't implement `Drop`][1.5dv].
+* A bug that caused in incorrect behavior when [combining `VecDeque`
+  with zero-sized types][1.5vdz] was resolved.
+* [`PartialOrd` for slices is faster][1.5po].
+
+Miscellaneous
+-------------
+
+* [Crate metadata size was reduced by 20%][1.5md].
+* [Improvements to code generation reduced the size of libcore by 3.3
+  MB and rustc's memory usage by 18MB][1.5m].
+* [Improvements to deref translation increased performance in
+  unoptimized builds][1.5dr].
+* Various errors in trait resolution [are deduplicated to only be
+  reported once][1.5te].
+* Rust has preliminary [support for rumprun kernels][1.5rr].
+* Rust has preliminary [support for NetBSD on amd64][1.5na].
+
+[1.5use]: https://github.com/rust-lang/rust/pull/28364
+[1.5po]: https://github.com/rust-lang/rust/pull/28436
+[1.5ev]: https://github.com/rust-lang/rust/pull/28442
+[1.5nu]: https://github.com/rust-lang/rust/pull/28468
+[1.5dr]: https://github.com/rust-lang/rust/pull/28491
+[1.5vdz]: https://github.com/rust-lang/rust/pull/28494
+[1.5md]: https://github.com/rust-lang/rust/pull/28521
+[1.5fg]: https://github.com/rust-lang/rust/pull/28522
+[1.5dv]: https://github.com/rust-lang/rust/pull/28531
+[1.5na]: https://github.com/rust-lang/rust/pull/28543
+[1.5fp]: https://github.com/rust-lang/rust/pull/28560
+[1.5rr]: https://github.com/rust-lang/rust/pull/28593
+[1.5cf]: https://github.com/rust-lang/rust/pull/28602
+[1.5nl]: https://github.com/rust-lang/rust/pull/28605
+[1.5te]: https://github.com/rust-lang/rust/pull/28645
+[1.5at]: https://github.com/rust-lang/rust/pull/28650
+[1.5am]: https://github.com/rust-lang/rust/pull/28663
+[1.5m]: https://github.com/rust-lang/rust/pull/28778
+[1.5ict]: https://github.com/rust-lang/rust/pull/28779
+[1.5a]: https://github.com/rust-lang/rust/pull/28811
+[1.5pi]: https://github.com/rust-lang/rust/pull/28826
+[1.5ce]: https://github.com/rust-lang/rfcs/blob/master/text/1229-compile-time-asserts.md
+[1.5p]: https://github.com/rust-lang/rfcs/blob/master/text/1238-nonparametric-dropck.md
+[1.5i]: https://github.com/rust-lang/rust/pull/28921
+[1.5fs]: https://github.com/rust-lang/rust/pull/29021
+[1.5f]: https://github.com/rust-lang/rust/pull/29129
+[1.5ds]: https://github.com/rust-lang/rust/pull/29148
+[1.5s]: https://github.com/rust-lang/rust/pull/29190
+[1.5d]: https://github.com/rust-lang/rust/pull/29245
+[1.5o]: https://github.com/rust-lang/rust/pull/29259
+[1.5nd]: https://github.com/rust-lang/rust/pull/28578
+[1.5wf2]: https://github.com/rust-lang/rfcs/blob/master/text/1214-projections-lifetimes-and-wf.md
+[1.5wf1]: https://github.com/rust-lang/rust/pull/28669
+[dropck]: https://doc.rust-lang.org/nightly/nomicon/dropck.html
+[1.5c]: https://github.com/rust-lang/rust/pull/29110
+[1.5w]: https://github.com/rust-lang/rfcs/blob/master/text/1241-no-wildcard-deps.md
+[`cargo install`]: https://github.com/rust-lang/rfcs/blob/master/text/1200-cargo-install.md
+[`BinaryHeap::from`]: http://doc.rust-lang.org/nightly/std/convert/trait.From.html#method.from
+[`BinaryHeap::into_sorted_vec`]: http://doc.rust-lang.org/nightly/std/collections/struct.BinaryHeap.html#method.into_sorted_vec
+[`BinaryHeap::into_vec`]: http://doc.rust-lang.org/nightly/std/collections/struct.BinaryHeap.html#method.into_vec
+[`Condvar::wait_timeout`]: http://doc.rust-lang.org/nightly/std/sync/struct.Condvar.html#method.wait_timeout
+[`FileTypeExt::is_block_device`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.FileTypeExt.html#tymethod.is_block_device
+[`FileTypeExt::is_char_device`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.FileTypeExt.html#tymethod.is_char_device
+[`FileTypeExt::is_fifo`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.FileTypeExt.html#tymethod.is_fifo
+[`FileTypeExt::is_socket`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.FileTypeExt.html#tymethod.is_socket
+[`FileTypeExt`]: http://doc.rust-lang.org/nightly/std/os/unix/fs/trait.FileTypeExt.html
+[`Formatter::alternate`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.alternate
+[`Formatter::fill`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.fill
+[`Formatter::precision`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.precision
+[`Formatter::sign_aware_zero_pad`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.sign_aware_zero_pad
+[`Formatter::sign_minus`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.sign_minus
+[`Formatter::sign_plus`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.sign_plus
+[`Formatter::width`]: http://doc.rust-lang.org/nightly/core/fmt/struct.Formatter.html#method.width
+[`Iterator::cmp`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.cmp
+[`Iterator::eq`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.eq
+[`Iterator::ge`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.ge
+[`Iterator::gt`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.gt
+[`Iterator::le`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.le
+[`Iterator::lt`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.lt
+[`Iterator::ne`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.ne
+[`Iterator::partial_cmp`]: http://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.partial_cmp
+[`Path::canonicalize`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.canonicalize
+[`Path::exists`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.exists
+[`Path::is_dir`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.is_dir
+[`Path::is_file`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.is_file
+[`Path::metadata`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.metadata
+[`Path::read_dir`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.read_dir
+[`Path::read_link`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.read_link
+[`Path::symlink_metadata`]: http://doc.rust-lang.org/nightly/std/path/struct.Path.html#method.symlink_metadata
+[`Utf8Error::valid_up_to`]: http://doc.rust-lang.org/nightly/core/str/struct.Utf8Error.html#method.valid_up_to
+[`Vec::resize`]: http://doc.rust-lang.org/nightly/std/vec/struct.Vec.html#method.resize
+[`VecDeque::as_mut_slices`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.as_mut_slices
+[`VecDeque::as_slices`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.as_slices
+[`VecDeque::insert`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.insert
+[`VecDeque::shrink_to_fit`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.shrink_to_fit
+[`VecDeque::swap_remove_back`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.swap_remove_back
+[`VecDeque::swap_remove_front`]: http://doc.rust-lang.org/nightly/std/collections/struct.VecDeque.html#method.swap_remove_front
+[`slice::split_first_mut`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.split_first_mut
+[`slice::split_first`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.split_first
+[`slice::split_last_mut`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.split_last_mut
+[`slice::split_last`]: http://doc.rust-lang.org/nightly/std/primitive.slice.html#method.split_last
+[`char::from_u32_unchecked`]: http://doc.rust-lang.org/nightly/std/char/fn.from_u32_unchecked.html
+[`fs::canonicalize`]: http://doc.rust-lang.org/nightly/std/fs/fn.canonicalize.html
+[`str::MatchIndices`]: http://doc.rust-lang.org/nightly/std/str/struct.MatchIndices.html
+[`str::RMatchIndices`]: http://doc.rust-lang.org/nightly/std/str/struct.RMatchIndices.html
+[`str::match_indices`]: http://doc.rust-lang.org/nightly/std/primitive.str.html#method.match_indices
+[`str::rmatch_indices`]: http://doc.rust-lang.org/nightly/std/primitive.str.html#method.rmatch_indices
+[`str::slice_mut_unchecked`]: http://doc.rust-lang.org/nightly/std/primitive.str.html#method.slice_mut_unchecked
+[`string::ParseError`]: http://doc.rust-lang.org/nightly/std/string/enum.ParseError.html
+
 Version 1.4.0 (2015-10-29)
-============================
+==========================
 
 * ~1200 changes, numerous bugfixes
 

@@ -42,18 +42,17 @@ PKG_FILES := \
     $(S)COPYRIGHT                              \
     $(S)LICENSE-APACHE                         \
     $(S)LICENSE-MIT                            \
-    $(S)AUTHORS.txt                            \
     $(S)CONTRIBUTING.md                        \
     $(S)README.md                              \
     $(S)RELEASES.md                            \
     $(S)configure $(S)Makefile.in              \
     $(S)man                                    \
     $(addprefix $(S)src/,                      \
-      compiletest                              \
+      bootstrap                                \
+      build_helper                             \
       doc                                      \
       driver                                   \
       etc                                      \
-      error-index-generator                    \
       $(foreach crate,$(CRATES),lib$(crate))   \
       libcollectionstest                       \
       libcoretest                              \
@@ -61,9 +60,10 @@ PKG_FILES := \
       rt                                       \
       rtstartup                                \
       rustllvm                                 \
-      snapshots.txt                            \
+      rustc                                    \
+      stage0.txt                               \
       rust-installer                           \
-      rustbook                                 \
+      tools                                    \
       test)                                    \
     $(PKG_GITMODULES)                          \
     $(filter-out config.stamp, \

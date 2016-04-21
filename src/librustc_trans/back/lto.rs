@@ -29,8 +29,9 @@ pub fn run(sess: &session::Session, llmod: ModuleRef,
            name_extra: &str,
            output_names: &config::OutputFilenames) {
     if sess.opts.cg.prefer_dynamic {
-        sess.err("cannot prefer dynamic linking when performing LTO");
-        sess.note("only 'staticlib' and 'bin' outputs are supported with LTO");
+        sess.struct_err("cannot prefer dynamic linking when performing LTO")
+            .note("only 'staticlib' and 'bin' outputs are supported with LTO")
+            .emit();
         sess.abort_if_errors();
     }
 
@@ -51,7 +52,7 @@ pub fn run(sess: &session::Session, llmod: ModuleRef,
     link::each_linked_rlib(sess, &mut |_, path| {
         let archive = ArchiveRO::open(&path).expect("wanted an rlib");
         let bytecodes = archive.iter().filter_map(|child| {
-            child.name().map(|name| (name, child))
+            child.ok().and_then(|c| c.name().map(|name| (name, c)))
         }).filter(|&(name, _)| name.ends_with("bytecode.deflate"));
         for (name, data) in bytecodes {
             let bc_encoded = data.data();
@@ -101,7 +102,7 @@ pub fn run(sess: &session::Session, llmod: ModuleRef,
                 if !llvm::LLVMRustLinkInExternalBitcode(llmod,
                                                         ptr as *const libc::c_char,
                                                         bc_decoded.len() as libc::size_t) {
-                    write::llvm_err(sess.diagnostic().handler(),
+                    write::llvm_err(sess.diagnostic(),
                                     format!("failed to load bc of `{}`",
                                             &name[..]));
                 }
@@ -144,7 +145,9 @@ pub fn run(sess: &session::Session, llmod: ModuleRef,
     unsafe {
         let pm = llvm::LLVMCreatePassManager();
         llvm::LLVMRustAddAnalysisPasses(tm, pm, llmod);
-        llvm::LLVMRustAddPass(pm, "verify\0".as_ptr() as *const _);
+        let pass = llvm::LLVMRustFindAndCreatePass("verify\0".as_ptr() as *const _);
+        assert!(!pass.is_null());
+        llvm::LLVMRustAddPass(pm, pass);
 
         with_llvm_pmb(llmod, config, &mut |b| {
             llvm::LLVMPassManagerBuilderPopulateLTOPassManager(b, pm,
@@ -152,7 +155,9 @@ pub fn run(sess: &session::Session, llmod: ModuleRef,
                 /* RunInliner = */ True);
         });
 
-        llvm::LLVMRustAddPass(pm, "verify\0".as_ptr() as *const _);
+        let pass = llvm::LLVMRustFindAndCreatePass("verify\0".as_ptr() as *const _);
+        assert!(!pass.is_null());
+        llvm::LLVMRustAddPass(pm, pass);
 
         time(sess.time_passes(), "LTO passes", ||
              llvm::LLVMRunPassManager(pm, llmod));

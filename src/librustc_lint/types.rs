@@ -8,12 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use middle::{infer};
-use middle::def_id::DefId;
-use middle::subst::Substs;
-use middle::ty::{self, Ty};
-use middle::const_eval::{eval_const_expr_partial, ConstVal};
-use middle::const_eval::EvalHint::ExprTypeChecked;
+#![allow(non_snake_case)]
+
+use rustc::hir::def_id::DefId;
+use rustc::infer;
+use rustc::ty::subst::Substs;
+use rustc::ty::{self, Ty, TyCtxt};
+use middle::const_val::ConstVal;
+use rustc_const_eval::eval_const_expr_partial;
+use rustc_const_eval::EvalHint::ExprTypeChecked;
 use util::nodemap::{FnvHashSet};
 use lint::{LateContext, LintContext, LintArray};
 use lint::{LintPass, LateLintPass};
@@ -21,15 +24,39 @@ use lint::{LintPass, LateLintPass};
 use std::cmp;
 use std::{i8, i16, i32, i64, u8, u16, u32, u64, f32, f64};
 
-use syntax::{abi, ast};
+use syntax::ast;
+use syntax::abi::Abi;
 use syntax::attr::{self, AttrMetaMethods};
 use syntax::codemap::{self, Span};
-use syntax::feature_gate::{emit_feature_err, GateIssue};
-use syntax::ast::{TyIs, TyUs, TyI8, TyU8, TyI16, TyU16, TyI32, TyU32, TyI64, TyU64};
 
-use rustc_front::hir;
-use rustc_front::intravisit::{self, Visitor};
-use rustc_front::util::is_shift_binop;
+use rustc::hir;
+
+register_long_diagnostics! {
+E0519: r##"
+It is not allowed to negate an unsigned integer.
+You can negate a signed integer and cast it to an
+unsigned integer or use the `!` operator.
+
+```
+let x: usize = -1isize as usize;
+let y: usize = !0;
+assert_eq!(x, y);
+```
+
+Alternatively you can use the `Wrapping` newtype
+or the `wrapping_neg` operation that all
+integral types support:
+
+```
+use std::num::Wrapping;
+let x: Wrapping<usize> = -Wrapping(1);
+let Wrapping(x) = x;
+let y: usize = 1.wrapping_neg();
+assert_eq!(x, y);
+```
+
+"##
+}
 
 declare_lint! {
     UNUSED_COMPARISONS,
@@ -73,42 +100,36 @@ impl LateLintPass for TypeLimits {
     fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
         match e.node {
             hir::ExprUnary(hir::UnNeg, ref expr) => {
-                match expr.node  {
-                    hir::ExprLit(ref lit) => {
-                        match lit.node {
-                            ast::LitInt(_, ast::UnsignedIntLit(_)) => {
-                                check_unsigned_negation_feature(cx, e.span);
-                            },
-                            ast::LitInt(_, ast::UnsuffixedIntLit(_)) => {
-                                if let ty::TyUint(_) = cx.tcx.node_id_to_type(e.id).sty {
-                                    check_unsigned_negation_feature(cx, e.span);
-                                }
-                            },
-                            _ => ()
-                        }
-                    },
-                    _ => {
-                        let t = cx.tcx.node_id_to_type(expr.id);
-                        match t.sty {
-                            ty::TyUint(_) => {
-                                check_unsigned_negation_feature(cx, e.span);
-                            },
-                            _ => ()
-                        }
+                if let hir::ExprLit(ref lit) = expr.node {
+                    match lit.node {
+                        ast::LitKind::Int(_, ast::LitIntType::Unsigned(_)) => {
+                            forbid_unsigned_negation(cx, e.span);
+                        },
+                        ast::LitKind::Int(_, ast::LitIntType::Unsuffixed) => {
+                            if let ty::TyUint(_) = cx.tcx.node_id_to_type(e.id).sty {
+                                forbid_unsigned_negation(cx, e.span);
+                            }
+                        },
+                        _ => ()
                     }
-                };
+                } else {
+                    let t = cx.tcx.node_id_to_type(expr.id);
+                    if let ty::TyUint(_) = t.sty {
+                        forbid_unsigned_negation(cx, e.span);
+                    }
+                }
                 // propagate negation, if the negation itself isn't negated
                 if self.negated_expr_id != e.id {
                     self.negated_expr_id = expr.id;
                 }
             },
             hir::ExprBinary(binop, ref l, ref r) => {
-                if is_comparison(binop) && !check_limits(cx.tcx, binop, &**l, &**r) {
+                if is_comparison(binop) && !check_limits(cx.tcx, binop, &l, &r) {
                     cx.span_lint(UNUSED_COMPARISONS, e.span,
                                  "comparison is useless due to type limits");
                 }
 
-                if is_shift_binop(binop.node) {
+                if binop.node.is_shift() {
                     let opt_ty_bits = match cx.tcx.node_id_to_type(l.id).sty {
                         ty::TyInt(t) => Some(int_ty_bits(t, cx.sess().target.int_type)),
                         ty::TyUint(t) => Some(uint_ty_bits(t, cx.sess().target.uint_type)),
@@ -117,12 +138,15 @@ impl LateLintPass for TypeLimits {
 
                     if let Some(bits) = opt_ty_bits {
                         let exceeding = if let hir::ExprLit(ref lit) = r.node {
-                            if let ast::LitInt(shift, _) = lit.node { shift >= bits }
+                            if let ast::LitKind::Int(shift, _) = lit.node { shift >= bits }
                             else { false }
                         } else {
                             match eval_const_expr_partial(cx.tcx, &r, ExprTypeChecked, None) {
-                                Ok(ConstVal::Int(shift)) => { shift as u64 >= bits },
-                                Ok(ConstVal::Uint(shift)) => { shift >= bits },
+                                Ok(ConstVal::Integral(i)) => {
+                                    i.is_negative() || i.to_u64()
+                                                        .map(|i| i >= bits)
+                                                        .unwrap_or(true)
+                                },
                                 _ => { false }
                             }
                         };
@@ -137,9 +161,9 @@ impl LateLintPass for TypeLimits {
                 match cx.tcx.node_id_to_type(e.id).sty {
                     ty::TyInt(t) => {
                         match lit.node {
-                            ast::LitInt(v, ast::SignedIntLit(_, ast::Plus)) |
-                            ast::LitInt(v, ast::UnsuffixedIntLit(ast::Plus)) => {
-                                let int_type = if let ast::TyIs = t {
+                            ast::LitKind::Int(v, ast::LitIntType::Signed(_)) |
+                            ast::LitKind::Int(v, ast::LitIntType::Unsuffixed) => {
+                                let int_type = if let ast::IntTy::Is = t {
                                     cx.sess().target.int_type
                                 } else {
                                     t
@@ -152,45 +176,46 @@ impl LateLintPass for TypeLimits {
                                 if (negative && v > max as u64 + 1) ||
                                    (!negative && v > max as u64) {
                                     cx.span_lint(OVERFLOWING_LITERALS, e.span,
-                                                 &*format!("literal out of range for {:?}", t));
+                                                 &format!("literal out of range for {:?}", t));
                                     return;
                                 }
                             }
-                            _ => panic!()
+                            _ => bug!()
                         };
                     },
                     ty::TyUint(t) => {
-                        let uint_type = if let ast::TyUs = t {
+                        let uint_type = if let ast::UintTy::Us = t {
                             cx.sess().target.uint_type
                         } else {
                             t
                         };
                         let (min, max) = uint_ty_range(uint_type);
                         let lit_val: u64 = match lit.node {
-                            ast::LitByte(_v) => return,  // _v is u8, within range by definition
-                            ast::LitInt(v, _) => v,
-                            _ => panic!()
+                            // _v is u8, within range by definition
+                            ast::LitKind::Byte(_v) => return,
+                            ast::LitKind::Int(v, _) => v,
+                            _ => bug!()
                         };
                         if lit_val < min || lit_val > max {
                             cx.span_lint(OVERFLOWING_LITERALS, e.span,
-                                         &*format!("literal out of range for {:?}", t));
+                                         &format!("literal out of range for {:?}", t));
                         }
                     },
                     ty::TyFloat(t) => {
                         let (min, max) = float_ty_range(t);
                         let lit_val: f64 = match lit.node {
-                            ast::LitFloat(ref v, _) |
-                            ast::LitFloatUnsuffixed(ref v) => {
+                            ast::LitKind::Float(ref v, _) |
+                            ast::LitKind::FloatUnsuffixed(ref v) => {
                                 match v.parse() {
                                     Ok(f) => f,
                                     Err(_) => return
                                 }
                             }
-                            _ => panic!()
+                            _ => bug!()
                         };
                         if lit_val < min || lit_val > max {
                             cx.span_lint(OVERFLOWING_LITERALS, e.span,
-                                         &*format!("literal out of range for {:?}", t));
+                                         &format!("literal out of range for {:?}", t));
                         }
                     },
                     _ => ()
@@ -207,7 +232,7 @@ impl LateLintPass for TypeLimits {
                 hir::BiGt => v >= min && v <  max,
                 hir::BiGe => v >  min && v <= max,
                 hir::BiEq | hir::BiNe => v >= min && v <= max,
-                _ => panic!()
+                _ => bug!()
             }
         }
 
@@ -225,52 +250,52 @@ impl LateLintPass for TypeLimits {
         // warnings are consistent between 32- and 64-bit platforms
         fn int_ty_range(int_ty: ast::IntTy) -> (i64, i64) {
             match int_ty {
-                ast::TyIs => (i64::MIN,        i64::MAX),
-                ast::TyI8 =>    (i8::MIN  as i64, i8::MAX  as i64),
-                ast::TyI16 =>   (i16::MIN as i64, i16::MAX as i64),
-                ast::TyI32 =>   (i32::MIN as i64, i32::MAX as i64),
-                ast::TyI64 =>   (i64::MIN,        i64::MAX)
+                ast::IntTy::Is => (i64::MIN,        i64::MAX),
+                ast::IntTy::I8 =>    (i8::MIN  as i64, i8::MAX  as i64),
+                ast::IntTy::I16 =>   (i16::MIN as i64, i16::MAX as i64),
+                ast::IntTy::I32 =>   (i32::MIN as i64, i32::MAX as i64),
+                ast::IntTy::I64 =>   (i64::MIN,        i64::MAX)
             }
         }
 
         fn uint_ty_range(uint_ty: ast::UintTy) -> (u64, u64) {
             match uint_ty {
-                ast::TyUs => (u64::MIN,         u64::MAX),
-                ast::TyU8 =>    (u8::MIN   as u64, u8::MAX   as u64),
-                ast::TyU16 =>   (u16::MIN  as u64, u16::MAX  as u64),
-                ast::TyU32 =>   (u32::MIN  as u64, u32::MAX  as u64),
-                ast::TyU64 =>   (u64::MIN,         u64::MAX)
+                ast::UintTy::Us => (u64::MIN,         u64::MAX),
+                ast::UintTy::U8 =>    (u8::MIN   as u64, u8::MAX   as u64),
+                ast::UintTy::U16 =>   (u16::MIN  as u64, u16::MAX  as u64),
+                ast::UintTy::U32 =>   (u32::MIN  as u64, u32::MAX  as u64),
+                ast::UintTy::U64 =>   (u64::MIN,         u64::MAX)
             }
         }
 
         fn float_ty_range(float_ty: ast::FloatTy) -> (f64, f64) {
             match float_ty {
-                ast::TyF32 => (f32::MIN as f64, f32::MAX as f64),
-                ast::TyF64 => (f64::MIN,        f64::MAX)
+                ast::FloatTy::F32 => (f32::MIN as f64, f32::MAX as f64),
+                ast::FloatTy::F64 => (f64::MIN,        f64::MAX)
             }
         }
 
         fn int_ty_bits(int_ty: ast::IntTy, target_int_ty: ast::IntTy) -> u64 {
             match int_ty {
-                ast::TyIs => int_ty_bits(target_int_ty, target_int_ty),
-                ast::TyI8 =>    i8::BITS  as u64,
-                ast::TyI16 =>   i16::BITS as u64,
-                ast::TyI32 =>   i32::BITS as u64,
-                ast::TyI64 =>   i64::BITS as u64
+                ast::IntTy::Is => int_ty_bits(target_int_ty, target_int_ty),
+                ast::IntTy::I8 => 8,
+                ast::IntTy::I16 => 16 as u64,
+                ast::IntTy::I32 => 32,
+                ast::IntTy::I64 => 64,
             }
         }
 
         fn uint_ty_bits(uint_ty: ast::UintTy, target_uint_ty: ast::UintTy) -> u64 {
             match uint_ty {
-                ast::TyUs => uint_ty_bits(target_uint_ty, target_uint_ty),
-                ast::TyU8 =>    u8::BITS  as u64,
-                ast::TyU16 =>   u16::BITS as u64,
-                ast::TyU32 =>   u32::BITS as u64,
-                ast::TyU64 =>   u64::BITS as u64
+                ast::UintTy::Us => uint_ty_bits(target_uint_ty, target_uint_ty),
+                ast::UintTy::U8 => 8,
+                ast::UintTy::U16 => 16,
+                ast::UintTy::U32 => 32,
+                ast::UintTy::U64 => 64,
             }
         }
 
-        fn check_limits(tcx: &ty::ctxt, binop: hir::BinOp,
+        fn check_limits(tcx: &TyCtxt, binop: hir::BinOp,
                         l: &hir::Expr, r: &hir::Expr) -> bool {
             let (lit, expr, swap) = match (&l.node, &r.node) {
                 (&hir::ExprLit(_), _) => (l, r, true),
@@ -289,13 +314,11 @@ impl LateLintPass for TypeLimits {
                     let (min, max) = int_ty_range(int_ty);
                     let lit_val: i64 = match lit.node {
                         hir::ExprLit(ref li) => match li.node {
-                            ast::LitInt(v, ast::SignedIntLit(_, ast::Plus)) |
-                            ast::LitInt(v, ast::UnsuffixedIntLit(ast::Plus)) => v as i64,
-                            ast::LitInt(v, ast::SignedIntLit(_, ast::Minus)) |
-                            ast::LitInt(v, ast::UnsuffixedIntLit(ast::Minus)) => -(v as i64),
+                            ast::LitKind::Int(v, ast::LitIntType::Signed(_)) |
+                            ast::LitKind::Int(v, ast::LitIntType::Unsuffixed) => v as i64,
                             _ => return true
                         },
-                        _ => panic!()
+                        _ => bug!()
                     };
                     is_valid(norm_binop, lit_val, min, max)
                 }
@@ -303,10 +326,10 @@ impl LateLintPass for TypeLimits {
                     let (min, max): (u64, u64) = uint_ty_range(uint_ty);
                     let lit_val: u64 = match lit.node {
                         hir::ExprLit(ref li) => match li.node {
-                            ast::LitInt(v, _) => v,
+                            ast::LitKind::Int(v, _) => v,
                             _ => return true
                         },
-                        _ => panic!()
+                        _ => bug!()
                     };
                     is_valid(norm_binop, lit_val, min, max)
                 }
@@ -322,15 +345,11 @@ impl LateLintPass for TypeLimits {
             }
         }
 
-        fn check_unsigned_negation_feature(cx: &LateContext, span: Span) {
-            if !cx.sess().features.borrow().negate_unsigned {
-                emit_feature_err(
-                    &cx.sess().parse_sess.span_diagnostic,
-                    "negate_unsigned",
-                    span,
-                    GateIssue::Language,
-                    "unary negation of unsigned integers may be removed in the future");
-            }
+        fn forbid_unsigned_negation(cx: &LateContext, span: Span) {
+            cx.sess()
+              .struct_span_err_with_code(span, "unary negation of unsigned integer", "E0519")
+              .span_help(span, "use a cast or the `!` operator")
+              .emit();
         }
     }
 }
@@ -357,7 +376,7 @@ enum FfiResult {
 /// to function pointers and references, but could be
 /// expanded to cover NonZero raw pointers and newtypes.
 /// FIXME: This duplicates code in trans.
-fn is_repr_nullable_ptr<'tcx>(tcx: &ty::ctxt<'tcx>,
+fn is_repr_nullable_ptr<'tcx>(tcx: &TyCtxt<'tcx>,
                               def: ty::AdtDef<'tcx>,
                               substs: &Substs<'tcx>)
                               -> bool {
@@ -374,23 +393,13 @@ fn is_repr_nullable_ptr<'tcx>(tcx: &ty::ctxt<'tcx>,
 
         if def.variants[data_idx].fields.len() == 1 {
             match def.variants[data_idx].fields[0].ty(tcx, substs).sty {
-                ty::TyBareFn(None, _) => { return true; }
+                ty::TyFnPtr(_) => { return true; }
                 ty::TyRef(..) => { return true; }
                 _ => { }
             }
         }
     }
     false
-}
-
-fn ast_ty_to_normalized<'tcx>(tcx: &ty::ctxt<'tcx>,
-                              id: ast::NodeId)
-                              -> Ty<'tcx> {
-    let tty = match tcx.ast_ty_to_ty_cache.borrow().get(&id) {
-        Some(&t) => t,
-        None => panic!("ast_ty_to_ty_cache was incomplete after typeck!")
-    };
-    infer::normalize_associated_type(tcx, &tty)
 }
 
 impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
@@ -539,12 +548,12 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
                 self.check_type_for_ffi(cache, ty)
             }
 
-            ty::TyBareFn(None, bare_fn) => {
+            ty::TyFnPtr(bare_fn) => {
                 match bare_fn.abi {
-                    abi::Rust |
-                    abi::RustIntrinsic |
-                    abi::PlatformIntrinsic |
-                    abi::RustCall => {
+                    Abi::Rust |
+                    Abi::RustIntrinsic |
+                    Abi::PlatformIntrinsic |
+                    Abi::RustCall => {
                         return FfiUnsafe(
                             "found function pointer with Rust calling \
                              convention in foreign module; consider using an \
@@ -578,16 +587,18 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
 
             ty::TyParam(..) | ty::TyInfer(..) | ty::TyError |
             ty::TyClosure(..) | ty::TyProjection(..) |
-            ty::TyBareFn(Some(_), _) => {
-                panic!("Unexpected type in foreign function")
+            ty::TyFnDef(..) => {
+                bug!("Unexpected type in foreign function")
             }
         }
     }
 
-    fn check_def(&mut self, sp: Span, id: ast::NodeId) {
-        let tty = ast_ty_to_normalized(self.cx.tcx, id);
+    fn check_type_for_ffi_and_report_errors(&mut self, sp: Span, ty: Ty<'tcx>) {
+        // it is only OK to use this function because extern fns cannot have
+        // any generic types right now:
+        let ty = infer::normalize_associated_type(self.cx.tcx, &ty);
 
-        match ImproperCTypesVisitor::check_type_for_ffi(self, &mut FnvHashSet(), tty) {
+        match self.check_type_for_ffi(&mut FnvHashSet(), ty) {
             FfiResult::FfiSafe => {}
             FfiResult::FfiUnsafe(s) => {
                 self.cx.span_lint(IMPROPER_CTYPES, sp, s);
@@ -608,26 +619,29 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
             }
         }
     }
-}
 
-impl<'a, 'tcx, 'v> Visitor<'v> for ImproperCTypesVisitor<'a, 'tcx> {
-    fn visit_ty(&mut self, ty: &hir::Ty) {
-        match ty.node {
-            hir::TyPath(..) |
-            hir::TyBareFn(..) => self.check_def(ty.span, ty.id),
-            hir::TyVec(..) => {
-                self.cx.span_lint(IMPROPER_CTYPES, ty.span,
-                    "found Rust slice type in foreign module, consider \
-                     using a raw pointer instead");
-            }
-            hir::TyFixedLengthVec(ref ty, _) => self.visit_ty(ty),
-            hir::TyTup(..) => {
-                self.cx.span_lint(IMPROPER_CTYPES, ty.span,
-                    "found Rust tuple type in foreign module; \
-                     consider using a struct instead`")
-            }
-            _ => intravisit::walk_ty(self, ty)
+    fn check_foreign_fn(&mut self, id: ast::NodeId, decl: &hir::FnDecl) {
+        let def_id = self.cx.tcx.map.local_def_id(id);
+        let scheme = self.cx.tcx.lookup_item_type(def_id);
+        let sig = scheme.ty.fn_sig();
+        let sig = self.cx.tcx.erase_late_bound_regions(&sig);
+
+        for (&input_ty, input_hir) in sig.inputs.iter().zip(&decl.inputs) {
+            self.check_type_for_ffi_and_report_errors(input_hir.ty.span, &input_ty);
         }
+
+        if let hir::Return(ref ret_hir) = decl.output {
+            let ret_ty = sig.output.unwrap();
+            if !ret_ty.is_nil() {
+                self.check_type_for_ffi_and_report_errors(ret_hir.span, ret_ty);
+            }
+        }
+    }
+
+    fn check_foreign_static(&mut self, id: ast::NodeId, span: Span) {
+        let def_id = self.cx.tcx.map.local_def_id(id);
+        let scheme = self.cx.tcx.lookup_item_type(def_id);
+        self.check_type_for_ffi_and_report_errors(span, scheme.ty);
     }
 }
 
@@ -642,29 +656,17 @@ impl LintPass for ImproperCTypes {
 
 impl LateLintPass for ImproperCTypes {
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
-        fn check_ty(cx: &LateContext, ty: &hir::Ty) {
-            let mut vis = ImproperCTypesVisitor { cx: cx };
-            vis.visit_ty(ty);
-        }
-
-        fn check_foreign_fn(cx: &LateContext, decl: &hir::FnDecl) {
-            for input in &decl.inputs {
-                check_ty(cx, &*input.ty);
-            }
-            if let hir::Return(ref ret_ty) = decl.output {
-                let tty = ast_ty_to_normalized(cx.tcx, ret_ty.id);
-                if !tty.is_nil() {
-                    check_ty(cx, &ret_ty);
-                }
-            }
-        }
-
+        let mut vis = ImproperCTypesVisitor { cx: cx };
         if let hir::ItemForeignMod(ref nmod) = it.node {
-            if nmod.abi != abi::RustIntrinsic && nmod.abi != abi::PlatformIntrinsic {
+            if nmod.abi != Abi::RustIntrinsic && nmod.abi != Abi::PlatformIntrinsic {
                 for ni in &nmod.items {
                     match ni.node {
-                        hir::ForeignItemFn(ref decl, _) => check_foreign_fn(cx, &**decl),
-                        hir::ForeignItemStatic(ref t, _) => check_ty(cx, &**t)
+                        hir::ForeignItemFn(ref decl, _) => {
+                            vis.check_foreign_fn(ni.id, decl);
+                        }
+                        hir::ForeignItemStatic(ref ty, _) => {
+                            vis.check_foreign_static(ni.id, ty.span);
+                        }
                     }
                 }
             }

@@ -397,12 +397,15 @@
 //! }
 //!
 //! let mut map = BTreeMap::new();
-//! map.insert(Foo { a: 1, b: "baz" }, ());
+//! map.insert(Foo { a: 1, b: "baz" }, 99);
 //!
 //! // We already have a Foo with an a of 1, so this will be updating the value.
-//! map.insert(Foo { a: 1, b: "xyz" }, ());
+//! map.insert(Foo { a: 1, b: "xyz" }, 100);
 //!
-//! // ... but the key hasn't changed. b is still "baz", not "xyz"
+//! // The value has been updated...
+//! assert_eq!(map.values().next().unwrap(), &100);
+//!
+//! // ...but the key hasn't changed. b is still "baz", not "xyz".
 //! assert_eq!(map.keys().next().unwrap().b, "baz");
 //! ```
 
@@ -438,12 +441,4 @@ pub mod hash_set {
     //! A hashset
     #[stable(feature = "rust1", since = "1.0.0")]
     pub use super::hash::set::*;
-}
-
-/// Experimental support for providing custom hash algorithms to a HashMap and
-/// HashSet.
-#[unstable(feature = "hashmap_hasher", reason = "module was recently added",
-           issue = "27713")]
-pub mod hash_state {
-    pub use super::hash::state::*;
 }

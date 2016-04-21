@@ -9,16 +9,13 @@
 // except according to those terms.
 
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rustc_bitflags"]
 #![feature(associated_consts)]
 #![feature(staged_api)]
-#![cfg_attr(stage0, staged_api)]
 #![crate_type = "rlib"]
-#![feature(no_std)]
 #![no_std]
 #![unstable(feature = "rustc_private", issue = "27812")]
+#![cfg_attr(not(stage0), deny(warnings))]
 
 //! A typesafe bitmask flag generator.
 

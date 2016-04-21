@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Overloadable operators
+//! Overloadable operators.
 //!
 //! Implementing these traits allows you to get an effect similar to
 //! overloading operators.
@@ -38,7 +38,7 @@
 //! #[derive(Debug)]
 //! struct Point {
 //!     x: i32,
-//!     y: i32
+//!     y: i32,
 //! }
 //!
 //! impl Add for Point {
@@ -67,8 +67,11 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use marker::{Sized, Unsize};
+use cmp::PartialOrd;
 use fmt;
+use convert::From;
+use marker::{Sized, Unsize};
+use num::One;
 
 /// The `Drop` trait is used to run some code when a value goes out of scope.
 /// This is sometimes called a 'destructor'.
@@ -95,6 +98,16 @@ use fmt;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Drop {
     /// A method called when the value goes out of scope.
+    ///
+    /// When this method has been called, `self` has not yet been deallocated.
+    /// If it were, `self` would be a dangling reference.
+    ///
+    /// After this function is over, the memory of `self` will be deallocated.
+    ///
+    /// # Panics
+    ///
+    /// Given that a `panic!` will call `drop()` as it unwinds, any `panic!` in
+    /// a `drop()` implementation will likely abort.
     #[stable(feature = "rust1", since = "1.0.0")]
     fn drop(&mut self);
 }
@@ -161,7 +174,6 @@ macro_rules! forward_ref_binop {
 /// ```
 /// use std::ops::Add;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Add for Foo {
@@ -215,7 +227,6 @@ add_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// ```
 /// use std::ops::Sub;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Sub for Foo {
@@ -269,7 +280,6 @@ sub_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// ```
 /// use std::ops::Mul;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Mul for Foo {
@@ -323,7 +333,6 @@ mul_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// ```
 /// use std::ops::Div;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Div for Foo {
@@ -395,7 +404,6 @@ div_impl_float! { f32 f64 }
 /// ```
 /// use std::ops::Rem;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Rem for Foo {
@@ -441,7 +449,6 @@ macro_rules! rem_impl_integer {
 
 rem_impl_integer! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 
-#[cfg(not(stage0))]
 macro_rules! rem_impl_float {
     ($($t:ty)*) => ($(
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -456,47 +463,7 @@ macro_rules! rem_impl_float {
     )*)
 }
 
-#[cfg(not(stage0))]
 rem_impl_float! { f32 f64 }
-
-#[stable(feature = "rust1", since = "1.0.0")]
-#[cfg(stage0)]
-impl Rem for f32 {
-    type Output = f32;
-
-    // The builtin f32 rem operator is broken when targeting
-    // MSVC; see comment in std::f32::floor.
-    // FIXME: See also #27859.
-    #[inline]
-    #[cfg(target_env = "msvc")]
-    fn rem(self, other: f32) -> f32 {
-        (self as f64).rem(other as f64) as f32
-    }
-
-    #[inline]
-    #[cfg(not(target_env = "msvc"))]
-    fn rem(self, other: f32) -> f32 {
-        extern { fn fmodf(a: f32, b: f32) -> f32; }
-        unsafe { fmodf(self, other) }
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-#[cfg(stage0)]
-impl Rem for f64 {
-    type Output = f64;
-
-    #[inline]
-    fn rem(self, other: f64) -> f64 {
-        extern { fn fmod(a: f64, b: f64) -> f64; }
-        unsafe { fmod(self, other) }
-    }
-}
-
-#[cfg(stage0)]
-forward_ref_binop! { impl Rem, rem for f64, f64 }
-#[cfg(stage0)]
-forward_ref_binop! { impl Rem, rem for f32, f32 }
 
 /// The `Neg` trait is used to specify the functionality of unary `-`.
 ///
@@ -508,7 +475,6 @@ forward_ref_binop! { impl Rem, rem for f32, f32 }
 /// ```
 /// use std::ops::Neg;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Neg for Foo {
@@ -576,7 +542,6 @@ neg_impl_numeric! { isize i8 i16 i32 i64 f32 f64 }
 /// ```
 /// use std::ops::Not;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Not for Foo {
@@ -630,7 +595,6 @@ not_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// ```
 /// use std::ops::BitAnd;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitAnd for Foo {
@@ -684,7 +648,6 @@ bitand_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// ```
 /// use std::ops::BitOr;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitOr for Foo {
@@ -738,7 +701,6 @@ bitor_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// ```
 /// use std::ops::BitXor;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitXor for Foo {
@@ -792,7 +754,6 @@ bitxor_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// ```
 /// use std::ops::Shl;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Shl<Foo> for Foo {
@@ -864,7 +825,6 @@ shl_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 /// ```
 /// use std::ops::Shr;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl Shr<Foo> for Foo {
@@ -934,12 +894,8 @@ shr_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 /// calling `add_assign`, and therefore, `main` prints `Adding!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::AddAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl AddAssign for Foo {
@@ -954,18 +910,17 @@ shr_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 ///     foo += Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "add_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait AddAssign<Rhs=Self> {
     /// The method for the `+=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn add_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! add_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl AddAssign for $t {
             #[inline]
             fn add_assign(&mut self, other: $t) { *self += other }
@@ -973,7 +928,6 @@ macro_rules! add_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 add_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 
 /// The `SubAssign` trait is used to specify the functionality of `-=`.
@@ -984,12 +938,8 @@ add_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// calling `sub_assign`, and therefore, `main` prints `Subtracting!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::SubAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl SubAssign for Foo {
@@ -1004,18 +954,17 @@ add_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 ///     foo -= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "sub_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait SubAssign<Rhs=Self> {
     /// The method for the `-=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn sub_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! sub_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl SubAssign for $t {
             #[inline]
             fn sub_assign(&mut self, other: $t) { *self -= other }
@@ -1023,7 +972,6 @@ macro_rules! sub_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 sub_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 
 /// The `MulAssign` trait is used to specify the functionality of `*=`.
@@ -1034,12 +982,8 @@ sub_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// calling `mul_assign`, and therefore, `main` prints `Multiplying!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::MulAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl MulAssign for Foo {
@@ -1054,18 +998,17 @@ sub_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 ///     foo *= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "mul_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait MulAssign<Rhs=Self> {
     /// The method for the `*=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn mul_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! mul_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl MulAssign for $t {
             #[inline]
             fn mul_assign(&mut self, other: $t) { *self *= other }
@@ -1073,7 +1016,6 @@ macro_rules! mul_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 mul_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 
 /// The `DivAssign` trait is used to specify the functionality of `/=`.
@@ -1084,12 +1026,8 @@ mul_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// calling `div_assign`, and therefore, `main` prints `Dividing!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::DivAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl DivAssign for Foo {
@@ -1104,18 +1042,17 @@ mul_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 ///     foo /= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "div_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait DivAssign<Rhs=Self> {
     /// The method for the `/=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn div_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! div_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl DivAssign for $t {
             #[inline]
             fn div_assign(&mut self, other: $t) { *self /= other }
@@ -1123,7 +1060,6 @@ macro_rules! div_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 div_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 
 /// The `RemAssign` trait is used to specify the functionality of `%=`.
@@ -1134,12 +1070,8 @@ div_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// calling `rem_assign`, and therefore, `main` prints `Remainder-ing!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::RemAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl RemAssign for Foo {
@@ -1154,18 +1086,17 @@ div_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 ///     foo %= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "rem_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait RemAssign<Rhs=Self> {
     /// The method for the `%=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn rem_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! rem_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl RemAssign for $t {
             #[inline]
             fn rem_assign(&mut self, other: $t) { *self %= other }
@@ -1173,7 +1104,6 @@ macro_rules! rem_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 rem_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 
 /// The `BitAndAssign` trait is used to specify the functionality of `&=`.
@@ -1184,12 +1114,8 @@ rem_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 /// calling `bitand_assign`, and therefore, `main` prints `Bitwise And-ing!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::BitAndAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitAndAssign for Foo {
@@ -1204,18 +1130,17 @@ rem_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 ///     foo &= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "bitand_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait BitAndAssign<Rhs=Self> {
     /// The method for the `&` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn bitand_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! bitand_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl BitAndAssign for $t {
             #[inline]
             fn bitand_assign(&mut self, other: $t) { *self &= other }
@@ -1223,7 +1148,6 @@ macro_rules! bitand_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 bitand_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 
 /// The `BitOrAssign` trait is used to specify the functionality of `|=`.
@@ -1234,12 +1158,8 @@ bitand_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// calling `bitor_assign`, and therefore, `main` prints `Bitwise Or-ing!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::BitOrAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitOrAssign for Foo {
@@ -1254,18 +1174,17 @@ bitand_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 ///     foo |= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "bitor_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait BitOrAssign<Rhs=Self> {
     /// The method for the `|=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn bitor_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! bitor_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl BitOrAssign for $t {
             #[inline]
             fn bitor_assign(&mut self, other: $t) { *self |= other }
@@ -1273,7 +1192,6 @@ macro_rules! bitor_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 bitor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 
 /// The `BitXorAssign` trait is used to specify the functionality of `^=`.
@@ -1284,12 +1202,8 @@ bitor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// calling `bitxor_assign`, and therefore, `main` prints `Bitwise Xor-ing!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::BitXorAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl BitXorAssign for Foo {
@@ -1304,18 +1218,17 @@ bitor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 ///     foo ^= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "bitxor_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait BitXorAssign<Rhs=Self> {
     /// The method for the `^=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn bitxor_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! bitxor_assign_impl {
     ($($t:ty)+) => ($(
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl BitXorAssign for $t {
             #[inline]
             fn bitxor_assign(&mut self, other: $t) { *self ^= other }
@@ -1323,7 +1236,6 @@ macro_rules! bitxor_assign_impl {
     )+)
 }
 
-#[cfg(not(stage0))]
 bitxor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 
 /// The `ShlAssign` trait is used to specify the functionality of `<<=`.
@@ -1334,12 +1246,8 @@ bitxor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 /// calling `shl_assign`, and therefore, `main` prints `Shifting left!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::ShlAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl ShlAssign<Foo> for Foo {
@@ -1354,18 +1262,17 @@ bitxor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
 ///     foo <<= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "shl_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait ShlAssign<Rhs> {
     /// The method for the `<<=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn shl_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! shl_assign_impl {
     ($t:ty, $f:ty) => (
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl ShlAssign<$f> for $t {
             #[inline]
             fn shl_assign(&mut self, other: $f) {
@@ -1375,7 +1282,6 @@ macro_rules! shl_assign_impl {
     )
 }
 
-#[cfg(not(stage0))]
 macro_rules! shl_assign_impl_all {
     ($($t:ty)*) => ($(
         shl_assign_impl! { $t, u8 }
@@ -1392,7 +1298,6 @@ macro_rules! shl_assign_impl_all {
     )*)
 }
 
-#[cfg(not(stage0))]
 shl_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 
 /// The `ShrAssign` trait is used to specify the functionality of `>>=`.
@@ -1403,12 +1308,8 @@ shl_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 /// calling `shr_assign`, and therefore, `main` prints `Shifting right!`.
 ///
 /// ```
-/// #![feature(augmented_assignments)]
-/// #![feature(op_assign_traits)]
-///
 /// use std::ops::ShrAssign;
 ///
-/// #[derive(Copy, Clone)]
 /// struct Foo;
 ///
 /// impl ShrAssign<Foo> for Foo {
@@ -1423,18 +1324,17 @@ shl_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 ///     foo >>= Foo;
 /// }
 /// ```
-#[cfg(not(stage0))]
 #[lang = "shr_assign"]
-#[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+#[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait ShrAssign<Rhs=Self> {
     /// The method for the `>>=` operator
+    #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn shr_assign(&mut self, Rhs);
 }
 
-#[cfg(not(stage0))]
 macro_rules! shr_assign_impl {
     ($t:ty, $f:ty) => (
-        #[unstable(feature = "op_assign_traits", reason = "recently added", issue = "28235")]
+        #[stable(feature = "op_assign_traits", since = "1.8.0")]
         impl ShrAssign<$f> for $t {
             #[inline]
             fn shr_assign(&mut self, other: $f) {
@@ -1444,7 +1344,6 @@ macro_rules! shr_assign_impl {
     )
 }
 
-#[cfg(not(stage0))]
 macro_rules! shr_assign_impl_all {
     ($($t:ty)*) => ($(
         shr_assign_impl! { $t, u8 }
@@ -1461,7 +1360,6 @@ macro_rules! shr_assign_impl_all {
     )*)
 }
 
-#[cfg(not(stage0))]
 shr_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
 
 /// The `Index` trait is used to specify the functionality of indexing operations
@@ -1548,9 +1446,25 @@ pub trait IndexMut<Idx: ?Sized>: Index<Idx> {
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output;
 }
 
-/// An unbounded range.
+/// An unbounded range. Use `..` (two dots) for its shorthand.
+///
+/// Its primary use case is slicing index. It cannot serve as an iterator
+/// because it doesn't have a starting point.
+///
+/// # Examples
+///
+/// ```
+/// fn main() {
+///     assert_eq!((..), std::ops::RangeFull);
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ .. ], [0,1,2,3]);  // RangeFull
+///     assert_eq!(arr[ ..3], [0,1,2  ]);
+///     assert_eq!(arr[1.. ], [  1,2,3]);
+///     assert_eq!(arr[1..3], [  1,2  ]);
+/// }
+/// ```
 #[derive(Copy, Clone, PartialEq, Eq)]
-#[lang = "range_full"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RangeFull;
 
@@ -1561,9 +1475,27 @@ impl fmt::Debug for RangeFull {
     }
 }
 
-/// A (half-open) range which is bounded at both ends.
+/// A (half-open) range which is bounded at both ends: { x | start <= x < end }.
+/// Use `start..end` (two dots) for its shorthand.
+///
+/// See the [`contains()`](#method.contains) method for its characterization.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(iter_arith)]
+/// fn main() {
+///     assert_eq!((3..5), std::ops::Range{ start: 3, end: 5 });
+///     assert_eq!(3+4+5, (3..6).sum());
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ .. ], [0,1,2,3]);
+///     assert_eq!(arr[ ..3], [0,1,2  ]);
+///     assert_eq!(arr[1.. ], [  1,2,3]);
+///     assert_eq!(arr[1..3], [  1,2  ]);  // Range
+/// }
+/// ```
 #[derive(Clone, PartialEq, Eq)]
-#[lang = "range"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Range<Idx> {
     /// The lower bound of the range (inclusive).
@@ -1581,9 +1513,53 @@ impl<Idx: fmt::Debug> fmt::Debug for Range<Idx> {
     }
 }
 
-/// A range which is only bounded below.
+#[unstable(feature = "range_contains", reason = "recently added as per RFC", issue = "32311")]
+impl<Idx: PartialOrd<Idx>> Range<Idx> {
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_contains)]
+    /// fn main() {
+    ///     assert!( ! (3..5).contains(2));
+    ///     assert!(   (3..5).contains(3));
+    ///     assert!(   (3..5).contains(4));
+    ///     assert!( ! (3..5).contains(5));
+    ///
+    ///     assert!( ! (3..3).contains(3));
+    ///     assert!( ! (3..2).contains(3));
+    /// }
+    /// ```
+    pub fn contains(&self, item: Idx) -> bool {
+        (self.start <= item) && (item < self.end)
+    }
+}
+
+/// A range which is only bounded below: { x | start <= x }.
+/// Use `start..` for its shorthand.
+///
+/// See the [`contains()`](#method.contains) method for its characterization.
+///
+/// Note: Currently, no overflow checking is done for the iterator
+/// implementation; if you use an integer range and the integer overflows, it
+/// might panic in debug mode or create an endless loop in release mode. This
+/// overflow behavior might change in the future.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(iter_arith)]
+/// fn main() {
+///     assert_eq!((2..), std::ops::RangeFrom{ start: 2 });
+///     assert_eq!(2+3+4, (2..).take(3).sum());
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ .. ], [0,1,2,3]);
+///     assert_eq!(arr[ ..3], [0,1,2  ]);
+///     assert_eq!(arr[1.. ], [  1,2,3]);  // RangeFrom
+///     assert_eq!(arr[1..3], [  1,2  ]);
+/// }
+/// ```
 #[derive(Clone, PartialEq, Eq)]
-#[lang = "range_from"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RangeFrom<Idx> {
     /// The lower bound of the range (inclusive).
@@ -1598,9 +1574,41 @@ impl<Idx: fmt::Debug> fmt::Debug for RangeFrom<Idx> {
     }
 }
 
-/// A range which is only bounded above.
+#[unstable(feature = "range_contains", reason = "recently added as per RFC", issue = "32311")]
+impl<Idx: PartialOrd<Idx>> RangeFrom<Idx> {
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_contains)]
+    /// fn main() {
+    ///     assert!( ! (3..).contains(2));
+    ///     assert!(   (3..).contains(3));
+    ///     assert!(   (3..).contains(1_000_000_000));
+    /// }
+    /// ```
+    pub fn contains(&self, item: Idx) -> bool {
+        (self.start <= item)
+    }
+}
+
+/// A range which is only bounded above: { x | x < end }.
+/// Use `..end` (two dots) for its shorthand.
+///
+/// See the [`contains()`](#method.contains) method for its characterization.
+///
+/// It cannot serve as an iterator because it doesn't have a starting point.
+/// ```
+/// fn main() {
+///     assert_eq!((..5), std::ops::RangeTo{ end: 5 });
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ .. ], [0,1,2,3]);
+///     assert_eq!(arr[ ..3], [0,1,2  ]);  // RangeTo
+///     assert_eq!(arr[1.. ], [  1,2,3]);
+///     assert_eq!(arr[1..3], [  1,2  ]);
+/// }
+/// ```
 #[derive(Copy, Clone, PartialEq, Eq)]
-#[lang = "range_to"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RangeTo<Idx> {
     /// The upper bound of the range (exclusive).
@@ -1615,8 +1623,185 @@ impl<Idx: fmt::Debug> fmt::Debug for RangeTo<Idx> {
     }
 }
 
+#[unstable(feature = "range_contains", reason = "recently added as per RFC", issue = "32311")]
+impl<Idx: PartialOrd<Idx>> RangeTo<Idx> {
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_contains)]
+    /// fn main() {
+    ///     assert!(   (..5).contains(-1_000_000_000));
+    ///     assert!(   (..5).contains(4));
+    ///     assert!( ! (..5).contains(5));
+    /// }
+    /// ```
+    pub fn contains(&self, item: Idx) -> bool {
+        (item < self.end)
+    }
+}
+
+/// An inclusive range which is bounded at both ends: { x | start <= x <= end }.
+/// Use `start...end` (three dots) for its shorthand.
+///
+/// See the [`contains()`](#method.contains) method for its characterization.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(inclusive_range,inclusive_range_syntax,iter_arith)]
+/// fn main() {
+///     assert_eq!((3...5), std::ops::RangeInclusive::NonEmpty{ start: 3, end: 5 });
+///     assert_eq!(3+4+5, (3...5).sum());
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ ...2], [0,1,2  ]);
+///     assert_eq!(arr[1...2], [  1,2  ]);  // RangeInclusive
+/// }
+/// ```
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[unstable(feature = "inclusive_range", reason = "recently added, follows RFC", issue = "28237")]
+pub enum RangeInclusive<Idx> {
+    /// Empty range (iteration has finished)
+    #[unstable(feature = "inclusive_range",
+               reason = "recently added, follows RFC",
+               issue = "28237")]
+    Empty {
+        /// The point at which iteration finished
+        #[unstable(feature = "inclusive_range",
+                   reason = "recently added, follows RFC",
+                   issue = "28237")]
+        at: Idx
+    },
+    /// Non-empty range (iteration will yield value(s))
+    #[unstable(feature = "inclusive_range",
+               reason = "recently added, follows RFC",
+               issue = "28237")]
+    NonEmpty {
+        /// The lower bound of the range (inclusive).
+        #[unstable(feature = "inclusive_range",
+                   reason = "recently added, follows RFC",
+                   issue = "28237")]
+        start: Idx,
+        /// The upper bound of the range (inclusive).
+        #[unstable(feature = "inclusive_range",
+                   reason = "recently added, follows RFC",
+                   issue = "28237")]
+        end: Idx,
+    },
+}
+
+#[unstable(feature = "inclusive_range", reason = "recently added, follows RFC", issue = "28237")]
+impl<Idx: fmt::Debug> fmt::Debug for RangeInclusive<Idx> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        use self::RangeInclusive::*;
+
+        match *self {
+            Empty { ref at } => write!(fmt, "[empty range @ {:?}]", at),
+            NonEmpty { ref start, ref end } => write!(fmt, "{:?}...{:?}", start, end),
+        }
+    }
+}
+
+#[unstable(feature = "inclusive_range", reason = "recently added, follows RFC", issue = "28237")]
+impl<Idx: PartialOrd + One + Sub<Output=Idx>> From<Range<Idx>> for RangeInclusive<Idx> {
+    fn from(range: Range<Idx>) -> RangeInclusive<Idx> {
+        use self::RangeInclusive::*;
+
+        if range.start < range.end {
+            NonEmpty {
+                start: range.start,
+                end: range.end - Idx::one() // can't underflow because end > start >= MIN
+            }
+        } else {
+            Empty {
+                at: range.start
+            }
+        }
+    }
+}
+
+#[unstable(feature = "range_contains", reason = "recently added as per RFC", issue = "32311")]
+impl<Idx: PartialOrd<Idx>> RangeInclusive<Idx> {
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_contains,inclusive_range_syntax)]
+    /// fn main() {
+    ///     assert!( ! (3...5).contains(2));
+    ///     assert!(   (3...5).contains(3));
+    ///     assert!(   (3...5).contains(4));
+    ///     assert!(   (3...5).contains(5));
+    ///     assert!( ! (3...5).contains(6));
+    ///
+    ///     assert!(   (3...3).contains(3));
+    ///     assert!( ! (3...2).contains(3));
+    /// }
+    /// ```
+    pub fn contains(&self, item: Idx) -> bool {
+        if let &RangeInclusive::NonEmpty{ref start, ref end} = self {
+            (*start <= item) && (item <= *end)
+        } else { false }
+    }
+}
+
+/// An inclusive range which is only bounded above: { x | x <= end }.
+/// Use `...end` (three dots) for its shorthand.
+///
+/// See the [`contains()`](#method.contains) method for its characterization.
+///
+/// It cannot serve as an iterator because it doesn't have a starting point.
+///
+/// # Examples
+///
+/// ```
+/// #![feature(inclusive_range,inclusive_range_syntax)]
+/// fn main() {
+///     assert_eq!((...5), std::ops::RangeToInclusive{ end: 5 });
+///
+///     let arr = [0, 1, 2, 3];
+///     assert_eq!(arr[ ...2], [0,1,2  ]);  // RangeToInclusive
+///     assert_eq!(arr[1...2], [  1,2  ]);
+/// }
+/// ```
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[unstable(feature = "inclusive_range", reason = "recently added, follows RFC", issue = "28237")]
+pub struct RangeToInclusive<Idx> {
+    /// The upper bound of the range (inclusive)
+    #[unstable(feature = "inclusive_range",
+               reason = "recently added, follows RFC",
+               issue = "28237")]
+    pub end: Idx,
+}
+
+#[unstable(feature = "inclusive_range", reason = "recently added, follows RFC", issue = "28237")]
+impl<Idx: fmt::Debug> fmt::Debug for RangeToInclusive<Idx> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "...{:?}", self.end)
+    }
+}
+
+#[unstable(feature = "range_contains", reason = "recently added as per RFC", issue = "32311")]
+impl<Idx: PartialOrd<Idx>> RangeToInclusive<Idx> {
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_contains,inclusive_range_syntax)]
+    /// fn main() {
+    ///     assert!(   (...5).contains(-1_000_000_000));
+    ///     assert!(   (...5).contains(5));
+    ///     assert!( ! (...5).contains(6));
+    /// }
+    /// ```
+    pub fn contains(&self, item: Idx) -> bool {
+        (item <= self.end)
+    }
+}
+
+// RangeToInclusive<Idx> cannot impl From<RangeTo<Idx>>
+// because underflow would be possible with (..0).into()
+
 /// The `Deref` trait is used to specify the functionality of dereferencing
-/// operations like `*v`.
+/// operations, like `*v`.
 ///
 /// `Deref` also enables ['`Deref` coercions'][coercions].
 ///
@@ -1732,7 +1917,7 @@ impl<'a, T: ?Sized> DerefMut for &'a mut T {
 #[fundamental] // so that regex can rely that `&str: !FnMut`
 pub trait Fn<Args> : FnMut<Args> {
     /// This is called when the call operator is used.
-    #[unstable(feature = "core", issue = "27701")]
+    #[unstable(feature = "fn_traits", issue = "29625")]
     extern "rust-call" fn call(&self, args: Args) -> Self::Output;
 }
 
@@ -1743,7 +1928,7 @@ pub trait Fn<Args> : FnMut<Args> {
 #[fundamental] // so that regex can rely that `&str: !FnMut`
 pub trait FnMut<Args> : FnOnce<Args> {
     /// This is called when the call operator is used.
-    #[unstable(feature = "core", issue = "27701")]
+    #[unstable(feature = "fn_traits", issue = "29625")]
     extern "rust-call" fn call_mut(&mut self, args: Args) -> Self::Output;
 }
 
@@ -1754,11 +1939,11 @@ pub trait FnMut<Args> : FnOnce<Args> {
 #[fundamental] // so that regex can rely that `&str: !FnMut`
 pub trait FnOnce<Args> {
     /// The returned type after the call operator is used.
-    #[unstable(feature = "core", issue = "27701")]
+    #[unstable(feature = "fn_traits", issue = "29625")]
     type Output;
 
     /// This is called when the call operator is used.
-    #[unstable(feature = "core", issue = "27701")]
+    #[unstable(feature = "fn_traits", issue = "29625")]
     extern "rust-call" fn call_once(self, args: Args) -> Self::Output;
 }
 

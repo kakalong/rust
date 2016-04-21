@@ -10,30 +10,54 @@
 
 // Can't use unit struct as enum pattern
 
-#![feature(braced_empty_structs)]
+// aux-build:empty-struct.rs
 
-struct Empty1;
+extern crate empty_struct;
+use empty_struct::*;
+
+struct Empty2;
 
 enum E {
-    Empty2
+    Empty4
 }
 
+// remove attribute after warning cycle and promoting warnings to errors
 fn main() {
-    let e1 = Empty1;
-    let e2 = E::Empty2;
+    let e2 = Empty2;
+    let e4 = E::Empty4;
+    let xe2 = XEmpty2;
+    let xe4 = XE::XEmpty4;
 
     // Rejected by parser as yet
-    // match e1 {
-    //     Empty1() => () // ERROR `Empty1` does not name a tuple variant or a tuple struct
-    // }
-    match e1 {
-        Empty1(..) => () //~ ERROR `Empty1` does not name a tuple variant or a tuple struct
-    }
-    // Rejected by parser as yet
     // match e2 {
-    //     E::Empty2() => () // ERROR `E::Empty2` does not name a tuple variant or a tuple struct
+    //     Empty2() => () // ERROR `Empty2` does not name a tuple variant or a tuple struct
+    // }
+    // match xe2 {
+    //     XEmpty2() => () // ERROR `XEmpty2` does not name a tuple variant or a tuple struct
     // }
     match e2 {
-        E::Empty2(..) => () //~ WARN `E::Empty2` does not name a tuple variant or a tuple struct
+        Empty2(..) => () //~ ERROR `Empty2` does not name a tuple variant or a tuple struct
+            //~^ ERROR hard error
+    }
+    match xe2 {
+        XEmpty2(..) => () //~ ERROR `XEmpty2` does not name a tuple variant or a tuple struct
+            //~^ ERROR hard error
+    }
+    // Rejected by parser as yet
+    // match e4 {
+    //     E::Empty4() => () // ERROR `E::Empty4` does not name a tuple variant or a tuple struct
+    // }
+    // match xe4 {
+    //     XE::XEmpty4() => (), // ERROR `XE::XEmpty4` does not name a tuple variant or a tuple
+    //     _ => {},
+    // }
+    match e4 {
+        E::Empty4(..) => () //~ ERROR `E::Empty4` does not name a tuple variant or a tuple struct
+            //~^ ERROR hard error
+    }
+    match xe4 {
+        XE::XEmpty4(..) => (), //~ ERROR `XE::XEmpty4` does not name a tuple variant or a tuple
+            //~^ ERROR hard error
+        _ => {},
     }
 }

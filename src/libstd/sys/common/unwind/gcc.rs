@@ -41,6 +41,10 @@ pub unsafe fn panic(data: Box<Any + Send + 'static>) -> ! {
     }
 }
 
+pub fn payload() -> *mut u8 {
+    0 as *mut u8
+}
+
 pub unsafe fn cleanup(ptr: *mut u8) -> Box<Any + Send + 'static> {
     let my_ep = ptr as *mut Exception;
     let cause = (*my_ep).cause.take();
@@ -220,8 +224,13 @@ pub mod eabi {
         context: *mut uw::_Unwind_Context
     ) -> uw::_Unwind_Reason_Code
     {
+        // Backtraces on ARM will call the personality routine with
+        // state == _US_VIRTUAL_UNWIND_FRAME | _US_FORCE_UNWIND. In those cases
+        // we want to continue unwinding the stack, otherwise all our backtraces
+        // would end at __rust_try.
         if (state as c_int & uw::_US_ACTION_MASK as c_int)
-                           == uw::_US_VIRTUAL_UNWIND_FRAME as c_int { // search phase
+                           == uw::_US_VIRTUAL_UNWIND_FRAME as c_int
+               && (state as c_int & uw::_US_FORCE_UNWIND as c_int) == 0 { // search phase
             uw::_URC_HANDLER_FOUND // catch!
         }
         else { // cleanup phase
@@ -247,6 +256,9 @@ pub mod eh_frame_registry {
     // See also: rtbegin.rs, `unwind` module.
 
     #[link(name = "gcc_eh")]
+    #[cfg(not(cargobuild))]
+    extern {}
+
     extern {
         fn __register_frame_info(eh_frame_begin: *const u8, object: *mut u8);
         fn __deregister_frame_info(eh_frame_begin: *const u8, object: *mut u8);

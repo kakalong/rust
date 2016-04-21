@@ -6,7 +6,7 @@ TARGET_RPATH_ENV = \
     $(LD_LIB_PATH_ENVVAR)="$(TMPDIR):$(TARGET_RPATH_DIR):$($(LD_LIB_PATH_ENVVAR))"
 
 BARE_RUSTC := $(HOST_RPATH_ENV) $(RUSTC)
-RUSTC := $(BARE_RUSTC) --out-dir $(TMPDIR) -L $(TMPDIR)
+RUSTC := $(BARE_RUSTC) --out-dir $(TMPDIR) -L $(TMPDIR) $(RUSTFLAGS)
 #CC := $(CC) -L $(TMPDIR)
 HTMLDOCCK := $(PYTHON) $(S)/src/etc/htmldocck.py
 
@@ -83,16 +83,16 @@ ifeq ($(UNAME),Bitrig)
 	EXTRACFLAGS := -lm -lpthread
 	EXTRACXXFLAGS := -lc++ -lc++abi
 else
+ifeq ($(UNAME),SunOS)
+	EXTRACFLAGS := -lm -lpthread -lposix4 -lsocket
+else
 ifeq ($(UNAME),OpenBSD)
 	EXTRACFLAGS := -lm -lpthread
-	# extend search lib for found estdc++ if build using gcc from
-	# ports under OpenBSD. This is needed for:
-	#  - run-make/execution-engine
-	#  - run-make/issue-19371
-	RUSTC := $(RUSTC) -L/usr/local/lib
+	RUSTC := $(RUSTC) -C linker="$(word 1,$(CC:ccache=))"
 else
 	EXTRACFLAGS := -lm -lrt -ldl -lpthread
 	EXTRACXXFLAGS := -lstdc++
+endif
 endif
 endif
 endif
@@ -104,8 +104,13 @@ REMOVE_RLIBS      = rm $(TMPDIR)/$(call RLIB_GLOB,$(1))
 
 %.a: %.o
 	ar crus $@ $<
+ifdef IS_MSVC
+%.lib: lib%.o
+	$(MSVC_LIB) -out:`cygpath -w $@` $<
+else
 %.lib: lib%.o
 	ar crus $@ $<
+endif
 %.dylib: %.o
 	$(CC) -dynamiclib -Wl,-dylib -o $@ $<
 %.so: %.o

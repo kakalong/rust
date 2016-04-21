@@ -33,18 +33,30 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         debug!("expr_as_rvalue(block={:?}, expr={:?})", block, expr);
 
         let this = self;
+        let scope_id = this.innermost_scope_id();
         let expr_span = expr.span;
 
         match expr.kind {
             ExprKind::Scope { extent, value } => {
-                this.in_scope(extent, block, |this| this.as_rvalue(block, value))
+                this.in_scope(extent, block, |this, _| this.as_rvalue(block, value))
             }
-            ExprKind::InlineAsm { asm } => {
-                block.and(Rvalue::InlineAsm(asm))
+            ExprKind::InlineAsm { asm, outputs, inputs } => {
+                let outputs = outputs.into_iter().map(|output| {
+                    unpack!(block = this.as_lvalue(block, output))
+                }).collect();
+
+                let inputs = inputs.into_iter().map(|input| {
+                    unpack!(block = this.as_operand(block, input))
+                }).collect();
+
+                block.and(Rvalue::InlineAsm {
+                    asm: asm.clone(),
+                    outputs: outputs,
+                    inputs: inputs
+                })
             }
             ExprKind::Repeat { value, count } => {
                 let value_operand = unpack!(block = this.as_operand(block, value));
-                let count = this.as_constant(count);
                 block.and(Rvalue::Repeat(value_operand, count))
             }
             ExprKind::Borrow { region, borrow_kind, arg } => {
@@ -60,30 +72,27 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 let arg = unpack!(block = this.as_operand(block, arg));
                 block.and(Rvalue::UnaryOp(op, arg))
             }
-            ExprKind::Box { value } => {
+            ExprKind::Box { value, value_extents } => {
                 let value = this.hir.mirror(value);
-                let value_ty = value.ty.clone();
-                let result = this.temp(value_ty.clone());
-
+                let result = this.temp(expr.ty);
                 // to start, malloc some memory of suitable type (thus far, uninitialized):
-                let rvalue = Rvalue::Box(value.ty.clone());
-                this.cfg.push_assign(block, expr_span, &result, rvalue);
-
-                // schedule a shallow free of that memory, lest we unwind:
-                let extent = this.extent_of_innermost_scope();
-                this.schedule_drop(expr_span, extent, DropKind::Free, &result, value_ty);
-
-                // initialize the box contents:
-                let contents = result.clone().deref();
-                unpack!(block = this.into(&contents, block, value));
-
-                // now that the result is fully initialized, cancel the drop
-                // by "using" the result (which is linear):
-                block.and(Rvalue::Use(Operand::Consume(result)))
+                this.cfg.push_assign(block, scope_id, expr_span, &result, Rvalue::Box(value.ty));
+                this.in_scope(value_extents, block, |this, _| {
+                    // schedule a shallow free of that memory, lest we unwind:
+                    this.schedule_box_free(expr_span, value_extents, &result, value.ty);
+                    // initialize the box contents:
+                    unpack!(block = this.into(&result.clone().deref(), block, value));
+                    block.and(Rvalue::Use(Operand::Consume(result)))
+                })
             }
             ExprKind::Cast { source } => {
-                let source = unpack!(block = this.as_operand(block, source));
-                block.and(Rvalue::Cast(CastKind::Misc, source, expr.ty))
+                let source = this.hir.mirror(source);
+                if source.ty == expr.ty {
+                    this.expr_as_rvalue(block, source)
+                } else {
+                    let source = unpack!(block = this.as_operand(block, source));
+                    block.and(Rvalue::Cast(CastKind::Misc, source, expr.ty))
+                }
             }
             ExprKind::ReifyFnPointer { source } => {
                 let source = unpack!(block = this.as_operand(block, source));
@@ -148,7 +157,9 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                           .collect();
                 block.and(Rvalue::Aggregate(AggregateKind::Closure(closure_id, substs), upvars))
             }
-            ExprKind::Adt { adt_def, variant_index, substs, fields, base } => { // see (*) above
+            ExprKind::Adt {
+                adt_def, variant_index, substs, fields, base
+            } => { // see (*) above
                 // first process the set of fields that were provided
                 // (evaluating them in order given by user)
                 let fields_map: FnvHashMap<_, _> =
@@ -156,25 +167,24 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                           .map(|f| (f.name, unpack!(block = this.as_operand(block, f.expr))))
                           .collect();
 
-                // if base expression is given, evaluate it now
-                let base = base.map(|base| unpack!(block = this.as_lvalue(block, base)));
-
-                // get list of all fields that we will need
                 let field_names = this.hir.all_fields(adt_def, variant_index);
 
-                // for the actual values we use, take either the
-                // expr the user specified or, if they didn't
-                // specify something for this field name, create a
-                // path relative to the base (which must have been
-                // supplied, or the IR is internally
-                // inconsistent).
-                let fields: Vec<_> =
+                let fields = if let Some(FruInfo { base, field_types }) = base {
+                    let base = unpack!(block = this.as_lvalue(block, base));
+
+                    // MIR does not natively support FRU, so for each
+                    // base-supplied field, generate an operand that
+                    // reads it from the base.
                     field_names.into_iter()
-                               .map(|n| match fields_map.get(&n) {
-                                   Some(v) => v.clone(),
-                                   None => Operand::Consume(base.clone().unwrap().field(n)),
-                               })
-                               .collect();
+                        .zip(field_types.into_iter())
+                        .map(|(n, ty)| match fields_map.get(&n) {
+                            Some(v) => v.clone(),
+                            None => Operand::Consume(base.clone().field(n, ty))
+                        })
+                        .collect()
+                } else {
+                    field_names.iter().map(|n| fields_map[n].clone()).collect()
+                };
 
                 block.and(Rvalue::Aggregate(AggregateKind::Adt(adt_def, variant_index, substs),
                                             fields))

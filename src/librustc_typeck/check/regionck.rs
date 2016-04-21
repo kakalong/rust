@@ -61,7 +61,7 @@
 //!
 //!     struct Foo { i: i32 }
 //!     struct Bar { foo: Foo  }
-//!     fn get_i(x: &'a Bar) -> &'a i32 {
+//!     fn get_i<'a>(x: &'a Bar) -> &'a i32 {
 //!        let foo = &x.foo; // Lifetime L1
 //!        &foo.i            // Lifetime L2
 //!     }
@@ -86,25 +86,22 @@ use astconv::AstConv;
 use check::dropck;
 use check::FnCtxt;
 use middle::free_region::FreeRegionMap;
-use middle::implicator::{self, Implication};
 use middle::mem_categorization as mc;
 use middle::mem_categorization::Categorization;
-use middle::region::CodeExtent;
-use middle::subst::Substs;
-use middle::traits;
-use middle::ty::{self, RegionEscape, ReScope, Ty, MethodCall, HasTypeFlags};
-use middle::infer::{self, GenericKind, InferCtxt, SubregionOrigin, TypeOrigin, VerifyBound};
-use middle::pat_util;
-use middle::ty::adjustment;
-use middle::ty::wf::ImpliedBound;
+use middle::region::{self, CodeExtent};
+use rustc::ty::subst::Substs;
+use rustc::traits;
+use rustc::ty::{self, Ty, TyCtxt, MethodCall, TypeFoldable};
+use rustc::infer::{self, GenericKind, InferCtxt, InferOk, SubregionOrigin, TypeOrigin, VerifyBound};
+use hir::pat_util;
+use rustc::ty::adjustment;
+use rustc::ty::wf::ImpliedBound;
 
 use std::mem;
-use std::rc::Rc;
 use syntax::ast;
 use syntax::codemap::Span;
-use rustc_front::intravisit::{self, Visitor};
-use rustc_front::hir;
-use rustc_front::util as hir_util;
+use rustc::hir::intravisit::{self, Visitor};
+use rustc::hir::{self, PatKind};
 
 use self::SubjectNode::Subject;
 
@@ -180,6 +177,9 @@ pub struct Rcx<'a, 'tcx: 'a> {
     // id of innermost fn body id
     body_id: ast::NodeId,
 
+    // call_site scope of innermost fn
+    call_site_scope: Option<CodeExtent>,
+
     // id of innermost fn or loop
     repeating_scope: ast::NodeId,
 
@@ -200,18 +200,23 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         Rcx { fcx: fcx,
               repeating_scope: initial_repeating_scope,
               body_id: initial_body_id,
+              call_site_scope: None,
               subject: subject,
               region_bound_pairs: Vec::new(),
               free_region_map: FreeRegionMap::new(),
         }
     }
 
-    pub fn tcx(&self) -> &'a ty::ctxt<'tcx> {
+    pub fn tcx(&self) -> &'a TyCtxt<'tcx> {
         self.fcx.ccx.tcx
     }
 
     pub fn infcx(&self) -> &InferCtxt<'a,'tcx> {
         self.fcx.infcx()
+    }
+
+    fn set_call_site_scope(&mut self, call_site_scope: Option<CodeExtent>) -> Option<CodeExtent> {
+        mem::replace(&mut self.call_site_scope, call_site_scope)
     }
 
     fn set_body_id(&mut self, body_id: ast::NodeId) -> ast::NodeId {
@@ -275,7 +280,7 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
     }
 
     fn visit_fn_body(&mut self,
-                     id: ast::NodeId,
+                     id: ast::NodeId, // the id of the fn itself
                      fn_decl: &hir::FnDecl,
                      body: &hir::Block,
                      span: Span)
@@ -283,13 +288,16 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         // When we enter a function, we can derive
         debug!("visit_fn_body(id={})", id);
 
+        let call_site = self.fcx.tcx().region_maps.lookup_code_extent(
+            region::CodeExtentData::CallSiteScope { fn_id: id, body_id: body.id });
+        let old_call_site_scope = self.set_call_site_scope(Some(call_site));
+
         let fn_sig = {
             let fn_sig_map = &self.infcx().tables.borrow().liberated_fn_sigs;
             match fn_sig_map.get(&id) {
                 Some(f) => f.clone(),
                 None => {
-                    self.tcx().sess.bug(
-                        &format!("No fn-sig entry for id={}", id));
+                    bug!("No fn-sig entry for id={}", id);
                 }
             }
         };
@@ -300,7 +308,7 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         // For the return type, if diverging, substitute `bool` just
         // because it will have no effect.
         //
-        // FIXME(#25759) return types should not be implied bounds
+        // FIXME(#27579) return types should not be implied bounds
         let fn_sig_tys: Vec<_> =
             fn_sig.inputs.iter()
                          .cloned()
@@ -315,9 +323,18 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         self.visit_block(body);
         self.visit_region_obligations(body.id);
 
+        let call_site_scope = self.call_site_scope.unwrap();
+        debug!("visit_fn_body body.id {} call_site_scope: {:?}",
+               body.id, call_site_scope);
+        type_of_node_must_outlive(self,
+                                  infer::CallReturn(span),
+                                  body.id,
+                                  ty::ReScope(call_site_scope));
+
         self.region_bound_pairs.truncate(old_region_bounds_pairs_len);
 
         self.set_body_id(old_body_id);
+        self.set_call_site_scope(old_call_site_scope);
     }
 
     fn visit_region_obligations(&mut self, node_id: ast::NodeId)
@@ -334,7 +351,6 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         let region_obligations =
             self.fcx
                 .inh
-                .infcx
                 .fulfillment_cx
                 .borrow()
                 .region_obligations(node_id)
@@ -345,58 +361,12 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
                    r_o, r_o.cause);
             let sup_type = self.resolve_type(r_o.sup_type);
             let origin = self.code_to_origin(r_o.cause.span, sup_type, &r_o.cause.code);
-
-            if r_o.sub_region != ty::ReEmpty {
-                type_must_outlive(self, origin, sup_type, r_o.sub_region);
-            } else {
-                self.visit_old_school_wf(node_id, sup_type, origin);
-            }
+            type_must_outlive(self, origin, sup_type, r_o.sub_region);
         }
 
         // Processing the region obligations should not cause the list to grow further:
         assert_eq!(region_obligations.len(),
-                   self.fcx.inh.infcx.fulfillment_cx.borrow().region_obligations(node_id).len());
-    }
-
-    fn visit_old_school_wf(&mut self,
-                           body_id: ast::NodeId,
-                           ty: Ty<'tcx>,
-                           origin: infer::SubregionOrigin<'tcx>) {
-        // As a weird kind of hack, we use a region of empty as a signal
-        // to mean "old-school WF rules". The only reason the old-school
-        // WF rules are not encoded using WF is that this leads to errors,
-        // and we want to phase those in gradually.
-
-        // FIXME(#27579) remove this weird special case once we phase in new WF rules completely
-        let implications = implicator::implications(self.infcx(),
-                                                    body_id,
-                                                    ty,
-                                                    ty::ReEmpty,
-                                                    origin.span());
-        let origin_for_ty = |ty: Option<Ty<'tcx>>| match ty {
-            None => origin.clone(),
-            Some(ty) => infer::ReferenceOutlivesReferent(ty, origin.span()),
-        };
-        for implication in implications {
-            match implication {
-                Implication::RegionSubRegion(ty, r1, r2) => {
-                    self.fcx.mk_subr(origin_for_ty(ty), r1, r2);
-                }
-                Implication::RegionSubGeneric(ty, r1, GenericKind::Param(param_ty)) => {
-                    param_ty_must_outlive(self, origin_for_ty(ty), r1, param_ty);
-                }
-                Implication::RegionSubGeneric(ty, r1, GenericKind::Projection(proj_ty)) => {
-                    projection_must_outlive(self, origin_for_ty(ty), r1, proj_ty);
-                }
-                Implication::Predicate(def_id, predicate) => {
-                    let cause = traits::ObligationCause::new(origin.span(),
-                                                             body_id,
-                                                             traits::ItemObligation(def_id));
-                    let obligation = traits::Obligation::new(cause, predicate);
-                    self.fcx.register_predicate(obligation);
-                }
-            }
-        }
+                   self.fcx.inh.fulfillment_cx.borrow().region_obligations(node_id).len());
     }
 
     fn code_to_origin(&self,
@@ -405,8 +375,6 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
                       code: &traits::ObligationCauseCode<'tcx>)
                       -> SubregionOrigin<'tcx> {
         match *code {
-            traits::ObligationCauseCode::RFC1214(ref code) =>
-                infer::RFC1214Subregion(Rc::new(self.code_to_origin(span, sup_type, code))),
             traits::ObligationCauseCode::ReferenceOutlivesReferent(ref_type) =>
                 infer::ReferenceOutlivesReferent(ref_type, span),
             _ =>
@@ -476,8 +444,8 @@ impl<'a, 'tcx> Rcx<'a, 'tcx> {
         let subject_node_id = match self.subject {
             Subject(s) => s,
             SubjectNode::None => {
-                self.tcx().sess.bug("cannot resolve_regions_and_report_errors \
-                                     without subject node");
+                bug!("cannot resolve_regions_and_report_errors \
+                      without subject node");
             }
         };
 
@@ -518,7 +486,7 @@ fn visit_block(rcx: &mut Rcx, b: &hir::Block) {
 fn visit_arm(rcx: &mut Rcx, arm: &hir::Arm) {
     // see above
     for p in &arm.pats {
-        constrain_bindings_in_pat(&**p, rcx);
+        constrain_bindings_in_pat(&p, rcx);
     }
 
     intravisit::walk_arm(rcx, arm);
@@ -526,7 +494,7 @@ fn visit_arm(rcx: &mut Rcx, arm: &hir::Arm) {
 
 fn visit_local(rcx: &mut Rcx, l: &hir::Local) {
     // see above
-    constrain_bindings_in_pat(&*l.pat, rcx);
+    constrain_bindings_in_pat(&l.pat, rcx);
     link_local(rcx, l);
     intravisit::walk_local(rcx, l);
 }
@@ -685,10 +653,10 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
 
         hir::ExprCall(ref callee, ref args) => {
             if has_method_map {
-                constrain_call(rcx, expr, Some(&**callee),
+                constrain_call(rcx, expr, Some(&callee),
                                args.iter().map(|e| &**e), false);
             } else {
-                constrain_callee(rcx, callee.id, expr, &**callee);
+                constrain_callee(rcx, callee.id, expr, &callee);
                 constrain_call(rcx, expr, None,
                                args.iter().map(|e| &**e), false);
             }
@@ -697,7 +665,7 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
         }
 
         hir::ExprMethodCall(_, _, ref args) => {
-            constrain_call(rcx, expr, Some(&*args[0]),
+            constrain_call(rcx, expr, Some(&args[0]),
                            args[1..].iter().map(|e| &**e), false);
 
             intravisit::walk_expr(rcx, expr);
@@ -705,7 +673,7 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
 
         hir::ExprAssignOp(_, ref lhs, ref rhs) => {
             if has_method_map {
-                constrain_call(rcx, expr, Some(&**lhs),
+                constrain_call(rcx, expr, Some(&lhs),
                                Some(&**rhs).into_iter(), false);
             }
 
@@ -713,20 +681,20 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
         }
 
         hir::ExprIndex(ref lhs, ref rhs) if has_method_map => {
-            constrain_call(rcx, expr, Some(&**lhs),
+            constrain_call(rcx, expr, Some(&lhs),
                            Some(&**rhs).into_iter(), true);
 
             intravisit::walk_expr(rcx, expr);
         },
 
         hir::ExprBinary(op, ref lhs, ref rhs) if has_method_map => {
-            let implicitly_ref_args = !hir_util::is_by_value_binop(op.node);
+            let implicitly_ref_args = !op.node.is_by_value();
 
             // As `expr_method_call`, but the call is via an
             // overloaded op.  Note that we (sadly) currently use an
             // implicit "by ref" sort of passing style here.  This
             // should be converted to an adjustment!
-            constrain_call(rcx, expr, Some(&**lhs),
+            constrain_call(rcx, expr, Some(&lhs),
                            Some(&**rhs).into_iter(), implicitly_ref_args);
 
             intravisit::walk_expr(rcx, expr);
@@ -735,8 +703,8 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
         hir::ExprBinary(_, ref lhs, ref rhs) => {
             // If you do `x OP y`, then the types of `x` and `y` must
             // outlive the operation you are performing.
-            let lhs_ty = rcx.resolve_expr_type_adjusted(&**lhs);
-            let rhs_ty = rcx.resolve_expr_type_adjusted(&**rhs);
+            let lhs_ty = rcx.resolve_expr_type_adjusted(&lhs);
+            let rhs_ty = rcx.resolve_expr_type_adjusted(&rhs);
             for &ty in &[lhs_ty, rhs_ty] {
                 type_must_outlive(rcx,
                                   infer::Operand(expr.span),
@@ -747,10 +715,10 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
         }
 
         hir::ExprUnary(op, ref lhs) if has_method_map => {
-            let implicitly_ref_args = !hir_util::is_by_value_unop(op);
+            let implicitly_ref_args = !op.is_by_value();
 
             // As above.
-            constrain_call(rcx, expr, Some(&**lhs),
+            constrain_call(rcx, expr, Some(&lhs),
                            None::<hir::Expr>.iter(), implicitly_ref_args);
 
             intravisit::walk_expr(rcx, expr);
@@ -761,7 +729,7 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
             let method_call = MethodCall::expr(expr.id);
             let base_ty = match rcx.fcx.inh.tables.borrow().method_map.get(&method_call) {
                 Some(method) => {
-                    constrain_call(rcx, expr, Some(&**base),
+                    constrain_call(rcx, expr, Some(&base),
                                    None::<hir::Expr>.iter(), true);
                     let fn_ret = // late-bound regions in overloaded method calls are instantiated
                         rcx.tcx().no_late_bound_regions(&method.ty.fn_ret()).unwrap();
@@ -779,7 +747,7 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
 
         hir::ExprIndex(ref vec_expr, _) => {
             // For a[b], the lifetime of a must enclose the deref
-            let vec_type = rcx.resolve_expr_type_adjusted(&**vec_expr);
+            let vec_type = rcx.resolve_expr_type_adjusted(&vec_expr);
             constrain_index(rcx, expr, vec_type);
 
             intravisit::walk_expr(rcx, expr);
@@ -789,12 +757,12 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
             // Determine if we are casting `source` to a trait
             // instance.  If so, we have to be sure that the type of
             // the source obeys the trait's region bound.
-            constrain_cast(rcx, expr, &**source);
+            constrain_cast(rcx, expr, &source);
             intravisit::walk_expr(rcx, expr);
         }
 
         hir::ExprAddrOf(m, ref base) => {
-            link_addr_of(rcx, expr, m, &**base);
+            link_addr_of(rcx, expr, m, &base);
 
             // Require that when you write a `&expr` expression, the
             // resulting pointer has a lifetime that encompasses the
@@ -809,13 +777,13 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
         }
 
         hir::ExprMatch(ref discr, ref arms, _) => {
-            link_match(rcx, &**discr, &arms[..]);
+            link_match(rcx, &discr, &arms[..]);
 
             intravisit::walk_expr(rcx, expr);
         }
 
         hir::ExprClosure(_, _, ref body) => {
-            check_expr_fn_block(rcx, expr, &**body);
+            check_expr_fn_block(rcx, expr, &body);
         }
 
         hir::ExprLoop(ref body, _) => {
@@ -826,12 +794,23 @@ fn visit_expr(rcx: &mut Rcx, expr: &hir::Expr) {
 
         hir::ExprWhile(ref cond, ref body, _) => {
             let repeating_scope = rcx.set_repeating_scope(cond.id);
-            rcx.visit_expr(&**cond);
+            rcx.visit_expr(&cond);
 
             rcx.set_repeating_scope(body.id);
-            rcx.visit_block(&**body);
+            rcx.visit_block(&body);
 
             rcx.set_repeating_scope(repeating_scope);
+        }
+
+        hir::ExprRet(Some(ref ret_expr)) => {
+            let call_site_scope = rcx.call_site_scope;
+            debug!("visit_expr ExprRet ret_expr.id {} call_site_scope: {:?}",
+                   ret_expr.id, call_site_scope);
+            type_of_node_must_outlive(rcx,
+                                      infer::CallReturn(ret_expr.span),
+                                      ret_expr.id,
+                                      ty::ReScope(call_site_scope.unwrap()));
+            intravisit::walk_expr(rcx, expr);
         }
 
         _ => {
@@ -900,14 +879,15 @@ fn constrain_callee(rcx: &mut Rcx,
                     _callee_expr: &hir::Expr) {
     let callee_ty = rcx.resolve_node_type(callee_id);
     match callee_ty.sty {
-        ty::TyBareFn(..) => { }
+        ty::TyFnDef(..) | ty::TyFnPtr(_) => { }
         _ => {
             // this should not happen, but it does if the program is
             // erroneous
             //
-            // tcx.sess.span_bug(
+            // bug!(
             //     callee_expr.span,
-            //     format!("Calling non-function: {}", callee_ty));
+            //     "Calling non-function: {}",
+            //     callee_ty);
         }
     }
 }
@@ -963,7 +943,7 @@ fn constrain_call<'a, I: Iterator<Item=&'a hir::Expr>>(rcx: &mut Rcx,
             rcx, infer::CallRcvr(r.span),
             r.id, callee_region);
         if implicitly_ref_args {
-            link_by_ref(rcx, &*r, callee_scope);
+            link_by_ref(rcx, &r, callee_scope);
         }
     }
 }
@@ -1005,10 +985,10 @@ fn constrain_autoderefs<'a, 'tcx>(rcx: &mut Rcx<'a, 'tcx>,
                 let (m, r) = match self_ty.sty {
                     ty::TyRef(r, ref m) => (m.mutbl, r),
                     _ => {
-                        rcx.tcx().sess.span_bug(
+                        span_bug!(
                             deref_expr.span,
-                            &format!("bad overloaded deref type {:?}",
-                                     method.ty))
+                            "bad overloaded deref type {:?}",
+                            method.ty)
                     }
                 };
 
@@ -1033,7 +1013,7 @@ fn constrain_autoderefs<'a, 'tcx>(rcx: &mut Rcx<'a, 'tcx>,
                                           return_type, r_deref_expr);
                         return_type
                     }
-                    ty::FnDiverging => unreachable!()
+                    ty::FnDiverging => bug!()
                 }
             }
             None => derefd_ty
@@ -1076,12 +1056,10 @@ fn check_safety_of_rvalue_destructor_if_necessary<'a, 'tcx>(rcx: &mut Rcx<'a, 't
                 }
                 ty::ReStatic => {}
                 region => {
-                    rcx.tcx()
-                       .sess
-                       .span_bug(span,
-                                 &format!("unexpected rvalue region in rvalue \
-                                           destructor safety checking: `{:?}`",
-                                          region));
+                    span_bug!(span,
+                              "unexpected rvalue region in rvalue \
+                               destructor safety checking: `{:?}`",
+                              region);
                 }
             }
         }
@@ -1161,7 +1139,7 @@ fn link_local(rcx: &Rcx, local: &hir::Local) {
     };
     let mc = mc::MemCategorizationContext::new(rcx.fcx.infcx());
     let discr_cmt = ignore_err!(mc.cat_expr(init_expr));
-    link_pattern(rcx, mc, discr_cmt, &*local.pat);
+    link_pattern(rcx, mc, discr_cmt, &local.pat);
 }
 
 /// Computes the guarantors for any ref bindings in a match and
@@ -1174,7 +1152,7 @@ fn link_match(rcx: &Rcx, discr: &hir::Expr, arms: &[hir::Arm]) {
     debug!("discr_cmt={:?}", discr_cmt);
     for arm in arms {
         for root_pat in &arm.pats {
-            link_pattern(rcx, mc, discr_cmt.clone(), &**root_pat);
+            link_pattern(rcx, mc, discr_cmt.clone(), &root_pat);
         }
     }
 }
@@ -1193,7 +1171,7 @@ fn link_fn_args(rcx: &Rcx, body_scope: CodeExtent, args: &[hir::Arg]) {
                arg_ty,
                arg_cmt,
                arg);
-        link_pattern(rcx, mc, arg_cmt, &*arg.pat);
+        link_pattern(rcx, mc, arg_cmt, &arg.pat);
     }
 }
 
@@ -1209,15 +1187,15 @@ fn link_pattern<'t, 'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
     let _ = mc.cat_pattern(discr_cmt, root_pat, |mc, sub_cmt, sub_pat| {
             match sub_pat.node {
                 // `ref x` pattern
-                hir::PatIdent(hir::BindByRef(mutbl), _, _) => {
+                PatKind::Ident(hir::BindByRef(mutbl), _, _) => {
                     link_region_from_node_type(
                         rcx, sub_pat.span, sub_pat.id,
                         mutbl, sub_cmt);
                 }
 
                 // `[_, ..slice, _]` pattern
-                hir::PatVec(_, Some(ref slice_pat), _) => {
-                    match mc.cat_slice_pattern(sub_cmt, &**slice_pat) {
+                PatKind::Vec(_, Some(ref slice_pat), _) => {
+                    match mc.cat_slice_pattern(sub_cmt, &slice_pat) {
                         Ok((slice_cmt, slice_mutbl, slice_r)) => {
                             link_region(rcx, sub_pat.span, &slice_r,
                                         ty::BorrowKind::from_mutbl(slice_mutbl),
@@ -1413,10 +1391,7 @@ fn link_reborrowed_region<'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
                     infer::ReborrowUpvar(span, *upvar_id)
                 }
                 _ => {
-                    rcx.tcx().sess.span_bug(
-                        span,
-                        &format!("Illegal upvar id: {:?}",
-                                upvar_id));
+                    span_bug!( span, "Illegal upvar id: {:?}", upvar_id);
                 }
             }
         }
@@ -1515,7 +1490,7 @@ pub fn substs_wf_in_scope<'a,'tcx>(rcx: &mut Rcx<'a,'tcx>,
 
     let origin = infer::ParameterInScope(origin, expr_span);
 
-    for &region in substs.regions() {
+    for &region in &substs.regions {
         rcx.fcx.mk_subr(origin.clone(), expr_region, region);
     }
 
@@ -1573,10 +1548,6 @@ fn components_must_outlive<'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
                 rcx.tcx().sess.delay_span_bug(
                     origin.span(),
                     &format!("unresolved inference variable in outlives: {:?}", v));
-            }
-            ty::outlives::Component::RFC1214(subcomponents) => {
-                let suborigin = infer::RFC1214Subregion(Rc::new(origin));
-                components_must_outlive(rcx, suborigin, subcomponents, region);
             }
         }
     }
@@ -1647,7 +1618,7 @@ fn projection_must_outlive<'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
     // edges, which winds up enforcing the same condition.
     let needs_infer = {
         projection_ty.trait_ref.substs.types.iter().any(|t| t.needs_infer()) ||
-            projection_ty.trait_ref.substs.regions().iter().any(|r| r.needs_infer())
+            projection_ty.trait_ref.substs.regions.iter().any(|r| r.needs_infer())
     };
     if env_bounds.is_empty() && needs_infer {
         debug!("projection_must_outlive: no declared bounds");
@@ -1656,7 +1627,7 @@ fn projection_must_outlive<'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
             type_must_outlive(rcx, origin.clone(), component_ty, region);
         }
 
-        for &r in projection_ty.trait_ref.substs.regions() {
+        for &r in &projection_ty.trait_ref.substs.regions {
             rcx.fcx.mk_subr(origin.clone(), region, r);
         }
 
@@ -1673,7 +1644,7 @@ fn projection_must_outlive<'a, 'tcx>(rcx: &Rcx<'a, 'tcx>,
     if !env_bounds.is_empty() && env_bounds[1..].iter().all(|b| *b == env_bounds[0]) {
         let unique_bound = env_bounds[0];
         debug!("projection_must_outlive: unique declared bound = {:?}", unique_bound);
-        if projection_ty.trait_ref.substs.regions()
+        if projection_ty.trait_ref.substs.regions
                                          .iter()
                                          .any(|r| env_bounds.contains(r))
         {
@@ -1733,7 +1704,7 @@ fn projection_declared_bounds<'a, 'tcx>(rcx: &Rcx<'a,'tcx>,
     let mut declared_bounds =
         declared_generic_bounds_from_env(rcx, GenericKind::Projection(projection_ty));
 
-    declared_bounds.push_all(
+    declared_bounds.extend_from_slice(
         &declared_projection_bounds_from_trait(rcx, span, projection_ty));
 
     declared_bounds
@@ -1869,7 +1840,11 @@ fn declared_projection_bounds_from_trait<'a,'tcx>(rcx: &Rcx<'a, 'tcx>,
 
                 // check whether this predicate applies to our current projection
                 match infer::mk_eqty(infcx, false, TypeOrigin::Misc(span), ty, outlives.0) {
-                    Ok(()) => { Ok(outlives.1) }
+                    Ok(InferOk { obligations, .. }) => {
+                        // FIXME(#32730) propagate obligations
+                        assert!(obligations.is_empty());
+                        Ok(outlives.1)
+                    }
                     Err(_) => { Err(()) }
                 }
             });

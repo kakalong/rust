@@ -35,7 +35,7 @@
 # that's per-target so you're allowed to conditionally add files based on the
 # target.
 ################################################################################
-NATIVE_LIBS := rust_builtin hoedown miniz rust_test_helpers
+NATIVE_LIBS := hoedown miniz rust_test_helpers
 
 # $(1) is the target triple
 define NATIVE_LIBRARIES
@@ -50,8 +50,6 @@ NATIVE_DEPS_hoedown_$(1) := hoedown/src/autolink.c \
 			hoedown/src/stack.c \
 			hoedown/src/version.c
 NATIVE_DEPS_miniz_$(1) = miniz.c
-NATIVE_DEPS_rust_builtin_$(1) := rust_builtin.c \
-			rust_android_dummy.c
 NATIVE_DEPS_rust_test_helpers_$(1) := rust_test_helpers.c
 
 ################################################################################
@@ -128,16 +126,39 @@ define DEF_THIRD_PARTY_TARGETS
 
 # $(1) is the target triple
 
-ifeq ($$(CFG_WINDOWSY_$(1)), 1)
-  # This isn't necessarily a desired option, but it's harmless and works around
-  # what appears to be a mingw-w64 bug.
+ifeq ($$(CFG_WINDOWSY_$(1)),1)
+  # A bit of history here, this used to be --enable-lazy-lock added in #14006
+  # which was filed with jemalloc in jemalloc/jemalloc#83 which was also
+  # reported to MinGW: http://sourceforge.net/p/mingw-w64/bugs/395/
   #
-  # https://sourceforge.net/p/mingw-w64/bugs/395/
-  JEMALLOC_ARGS_$(1) := --enable-lazy-lock
+  # When updating jemalloc to 4.0, however, it was found that binaries would
+  # exit with the status code STATUS_RESOURCE_NOT_OWNED indicating that a thread
+  # was unlocking a mutex it never locked. Disabling this "lazy lock" option
+  # seems to fix the issue, but it was enabled by default for MinGW targets in
+  # 13473c7 for jemalloc.
+  #
+  # As a result of all that, force disabling lazy lock on Windows, and after
+  # reading some code it at least *appears* that the initialization of mutexes
+  # is otherwise ok in jemalloc, so shouldn't cause problems hopefully...
+  #
+  # tl;dr: make windows behave like other platforms by disabling lazy locking,
+  #        but requires passing an option due to a historical default with
+  #        jemalloc.
+  JEMALLOC_ARGS_$(1) := --disable-lazy-lock
 else ifeq ($(OSTYPE_$(1)), apple-ios)
   JEMALLOC_ARGS_$(1) := --disable-tls
 else ifeq ($(findstring android, $(OSTYPE_$(1))), android)
-  JEMALLOC_ARGS_$(1) := --disable-tls
+  # We force android to have prefixed symbols because apparently replacement of
+  # the libc allocator doesn't quite work. When this was tested (unprefixed
+  # symbols), it was found that the `realpath` function in libc would allocate
+  # with libc malloc (not jemalloc malloc), and then the standard library would
+  # free with jemalloc free, causing a segfault.
+  #
+  # If the test suite passes, however, without symbol prefixes then we should be
+  # good to go!
+  JEMALLOC_ARGS_$(1) := --disable-tls --with-jemalloc-prefix=je_
+else ifeq ($(findstring dragonfly, $(OSTYPE_$(1))), dragonfly)
+  JEMALLOC_ARGS_$(1) := --with-jemalloc-prefix=je_
 endif
 
 ifdef CFG_ENABLE_DEBUG_JEMALLOC
@@ -175,7 +196,7 @@ JEMALLOC_LOCAL_$(1) := $$(JEMALLOC_BUILD_DIR_$(1))/lib/$$(JEMALLOC_REAL_NAME_$(1
 $$(JEMALLOC_LOCAL_$(1)): $$(JEMALLOC_DEPS) $$(MKFILE_DEPS)
 	@$$(call E, make: jemalloc)
 	cd "$$(JEMALLOC_BUILD_DIR_$(1))"; "$(S)src/jemalloc/configure" \
-		$$(JEMALLOC_ARGS_$(1)) --with-jemalloc-prefix=je_ $(CFG_JEMALLOC_FLAGS) \
+		$$(JEMALLOC_ARGS_$(1)) $(CFG_JEMALLOC_FLAGS) \
 		--build=$$(CFG_GNU_TRIPLE_$(CFG_BUILD)) --host=$$(CFG_GNU_TRIPLE_$(1)) \
 		CC="$$(CC_$(1)) $$(CFG_JEMALLOC_CFLAGS_$(1))" \
 		AR="$$(AR_$(1))" \
@@ -217,11 +238,11 @@ COMPRT_LIB_$(1) := $$(RT_OUTPUT_DIR_$(1))/$$(COMPRT_NAME_$(1))
 COMPRT_BUILD_DIR_$(1) := $$(RT_OUTPUT_DIR_$(1))/compiler-rt
 
 ifeq ($$(findstring msvc,$(1)),msvc)
-$$(COMPRT_LIB_$(1)): $$(COMPRT_DEPS) $$(MKFILE_DEPS) $$(LLVM_CONFIG_$(1))
+$$(COMPRT_LIB_$(1)): $$(COMPRT_DEPS) $$(MKFILE_DEPS) $$(LLVM_CONFIG_$$(CFG_BUILD))
 	@$$(call E, cmake: compiler-rt)
 	$$(Q)cd "$$(COMPRT_BUILD_DIR_$(1))"; $$(CFG_CMAKE) "$(S)src/compiler-rt" \
 		-DCMAKE_BUILD_TYPE=$$(LLVM_BUILD_CONFIG_MODE) \
-		-DLLVM_CONFIG_PATH=$$(LLVM_CONFIG_$(1)) \
+		-DLLVM_CONFIG_PATH=$$(LLVM_CONFIG_$$(CFG_BUILD)) \
 		-G"$$(CFG_CMAKE_GENERATOR)"
 	$$(Q)$$(CFG_CMAKE) --build "$$(COMPRT_BUILD_DIR_$(1))" \
 		--target lib/builtins/builtins \
@@ -234,7 +255,7 @@ COMPRT_AR_$(1) := $$(AR_$(1))
 # We chomp -Werror here because GCC warns about the type signature of
 # builtins not matching its own and the build fails. It's a bit hacky,
 # but what can we do, we're building libclang-rt using GCC ......
-COMPRT_CFLAGS_$(1) := $$(subst -Werror,,$$(CFG_GCCISH_CFLAGS_$(1))) -std=c99
+COMPRT_CFLAGS_$(1) := $$(CFG_GCCISH_CFLAGS_$(1)) -Wno-error -std=c99
 
 # FreeBSD Clang's packaging is problematic; it doesn't copy unwind.h to
 # the standard include directory. This should really be in our changes to
@@ -242,6 +263,15 @@ COMPRT_CFLAGS_$(1) := $$(subst -Werror,,$$(CFG_GCCISH_CFLAGS_$(1))) -std=c99
 ifeq ($$(findstring freebsd,$(1)),freebsd)
 	COMPRT_CFLAGS_$(1) += -I/usr/include/c++/v1
 endif
+
+ifeq ($$(findstring emscripten,$(1)),emscripten)
+
+# FIXME: emscripten doesn't use compiler-rt and can't build it without
+# further hacks
+$$(COMPRT_LIB_$(1)):
+	touch $$@
+
+else
 
 $$(COMPRT_LIB_$(1)): $$(COMPRT_DEPS) $$(MKFILE_DEPS)
 	@$$(call E, make: compiler-rt)
@@ -255,7 +285,10 @@ $$(COMPRT_LIB_$(1)): $$(COMPRT_DEPS) $$(MKFILE_DEPS)
 		TargetTriple=$(1) \
 		triple-builtins
 	$$(Q)cp $$(COMPRT_BUILD_DIR_$(1))/triple/builtins/libcompiler_rt.a $$@
+
+endif # if emscripten
 endif
+
 ################################################################################
 # libbacktrace
 #
@@ -286,6 +319,12 @@ else
 
 ifeq ($$(findstring msvc,$(1)),msvc)
 # See comment above
+$$(BACKTRACE_LIB_$(1)):
+	touch $$@
+else
+
+ifeq ($$(findstring emscripten,$(1)),emscripten)
+# FIXME: libbacktrace doesn't understand the emscripten triple
 $$(BACKTRACE_LIB_$(1)):
 	touch $$@
 else
@@ -324,7 +363,7 @@ $$(BACKTRACE_BUILD_DIR_$(1))/Makefile: $$(BACKTRACE_DEPS) $$(MKFILE_DEPS)
 	      CC="$$(CC_$(1))" \
 	      AR="$$(AR_$(1))" \
 	      RANLIB="$$(AR_$(1)) s" \
-	      CFLAGS="$$(CFG_GCCISH_CFLAGS_$(1):-Werror=) -fno-stack-protector" \
+	      CFLAGS="$$(CFG_GCCISH_CFLAGS_$(1)) -Wno-error -fno-stack-protector" \
 	      $(S)src/libbacktrace/configure --build=$(CFG_GNU_TRIPLE_$(CFG_BUILD)) --host=$(CFG_GNU_TRIPLE_$(1)))
 	$$(Q)echo '#undef HAVE_ATOMIC_FUNCTIONS' >> \
 	      $$(BACKTRACE_BUILD_DIR_$(1))/config.h
@@ -337,6 +376,7 @@ $$(BACKTRACE_LIB_$(1)): $$(BACKTRACE_BUILD_DIR_$(1))/Makefile $$(MKFILE_DEPS)
 		INCDIR=$(S)src/libbacktrace
 	$$(Q)cp $$(BACKTRACE_BUILD_DIR_$(1))/.libs/libbacktrace.a $$@
 
+endif # endif for emscripten
 endif # endif for msvc
 endif # endif for ios
 endif # endif for darwin

@@ -348,8 +348,8 @@
 //! The fill character is provided normally in conjunction with the `width`
 //! parameter. This indicates that if the value being formatted is smaller than
 //! `width` some extra characters will be printed around it. The extra
-//! characters are specified by `fill`, and the alignment can be one of two
-//! options:
+//! characters are specified by `fill`, and the alignment can be one of the
+//! following options:
 //!
 //! * `<` - the argument is left-aligned in `width` columns
 //! * `^` - the argument is center-aligned in `width` columns
@@ -429,20 +429,20 @@
 //! For example, these:
 //!
 //! ```
-//! // Hello {arg 0 (x)} is {arg 1 (0.01} with precision specified inline (5)}
+//! // Hello {arg 0 (x)} is {arg 1 (0.01) with precision specified inline (5)}
 //! println!("Hello {0} is {1:.5}", "x", 0.01);
 //!
-//! // Hello {arg 1 (x)} is {arg 2 (0.01} with precision specified in arg 0 (5)}
+//! // Hello {arg 1 (x)} is {arg 2 (0.01) with precision specified in arg 0 (5)}
 //! println!("Hello {1} is {2:.0$}", 5, "x", 0.01);
 //!
-//! // Hello {arg 0 (x)} is {arg 2 (0.01} with precision specified in arg 1 (5)}
+//! // Hello {arg 0 (x)} is {arg 2 (0.01) with precision specified in arg 1 (5)}
 //! println!("Hello {0} is {2:.1$}", "x", 5, 0.01);
 //!
-//! // Hello {next arg (x)} is {second of next two args (0.01} with precision
+//! // Hello {next arg (x)} is {second of next two args (0.01) with precision
 //! //                          specified in first of next two args (5)}
 //! println!("Hello {} is {:.*}",    "x", 5, 0.01);
 //!
-//! // Hello {next arg (x)} is {arg 2 (0.01} with precision
+//! // Hello {next arg (x)} is {arg 2 (0.01) with precision
 //! //                          specified in its predecessor (5)}
 //! println!("Hello {} is {2:.*}",   "x", 5, 0.01);
 //! ```
@@ -490,7 +490,7 @@ pub use core::fmt::{LowerExp, UpperExp};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::Error;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core::fmt::{ArgumentV1, Arguments, write, radix, Radix, RadixFmt};
+pub use core::fmt::{ArgumentV1, Arguments, write};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::fmt::{DebugList, DebugMap, DebugSet, DebugStruct, DebugTuple};
 

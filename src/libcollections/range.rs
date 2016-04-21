@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![unstable(feature = "collections_range", reason = "was just added",
-            issue = "27711")]
+#![unstable(feature = "collections_range",
+            reason = "waiting for dust to settle on inclusive ranges",
+            issue = "30877")]
 
 //! Range syntax.
 
@@ -34,6 +35,7 @@ pub trait RangeArgument<T> {
     }
 }
 
+// FIXME add inclusive ranges to RangeArgument
 
 impl<T> RangeArgument<T> for RangeFull {}
 

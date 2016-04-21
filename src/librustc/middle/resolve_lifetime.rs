@@ -18,11 +18,13 @@
 pub use self::DefRegion::*;
 use self::ScopeChain::*;
 
+use dep_graph::DepNode;
+use hir::map::Map;
 use session::Session;
-use middle::def::{self, DefMap};
+use hir::def::{Def, DefMap};
 use middle::region;
-use middle::subst;
-use middle::ty;
+use ty::subst;
+use ty;
 use std::fmt;
 use std::mem::replace;
 use syntax::ast;
@@ -30,9 +32,9 @@ use syntax::codemap::Span;
 use syntax::parse::token::special_idents;
 use util::nodemap::NodeMap;
 
-use rustc_front::hir;
-use rustc_front::print::pprust::lifetime_to_string;
-use rustc_front::intravisit::{self, Visitor, FnKind};
+use hir;
+use hir::print::lifetime_to_string;
+use hir::intravisit::{self, Visitor, FnKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, Debug)]
 pub enum DefRegion {
@@ -42,7 +44,7 @@ pub enum DefRegion {
                         /* lifetime decl */ ast::NodeId),
     DefLateBoundRegion(ty::DebruijnIndex,
                        /* lifetime decl */ ast::NodeId),
-    DefFreeRegion(/* block scope */ region::DestructionScopeData,
+    DefFreeRegion(region::CallSiteScopeData,
                   /* lifetime decl */ ast::NodeId),
 }
 
@@ -79,13 +81,13 @@ struct LifetimeContext<'a> {
 enum ScopeChain<'a> {
     /// EarlyScope(i, ['a, 'b, ...], s) extends s with early-bound
     /// lifetimes, assigning indexes 'a => i, 'b => i+1, ... etc.
-    EarlyScope(subst::ParamSpace, &'a Vec<hir::LifetimeDef>, Scope<'a>),
+    EarlyScope(subst::ParamSpace, &'a [hir::LifetimeDef], Scope<'a>),
     /// LateScope(['a, 'b, ...], s) extends s with late-bound
     /// lifetimes introduced by the declaration binder_id.
-    LateScope(&'a Vec<hir::LifetimeDef>, Scope<'a>),
-    /// lifetimes introduced by items within a code block are scoped
-    /// to that block.
-    BlockScope(region::DestructionScopeData, Scope<'a>),
+    LateScope(&'a [hir::LifetimeDef], Scope<'a>),
+
+    /// lifetimes introduced by a fn are scoped to the call-site for that fn.
+    FnScope { fn_id: ast::NodeId, body_id: ast::NodeId, s: Scope<'a> },
     RootScope
 }
 
@@ -93,18 +95,24 @@ type Scope<'a> = &'a ScopeChain<'a>;
 
 static ROOT_SCOPE: ScopeChain<'static> = RootScope;
 
-pub fn krate(sess: &Session, krate: &hir::Crate, def_map: &DefMap) -> NamedRegionMap {
+pub fn krate(sess: &Session,
+             hir_map: &Map,
+             def_map: &DefMap)
+             -> Result<NamedRegionMap, usize> {
+    let _task = hir_map.dep_graph.in_task(DepNode::ResolveLifetimes);
+    let krate = hir_map.krate();
     let mut named_region_map = NodeMap();
-    krate.visit_all_items(&mut LifetimeContext {
-        sess: sess,
-        named_region_map: &mut named_region_map,
-        scope: &ROOT_SCOPE,
-        def_map: def_map,
-        trait_ref_hack: false,
-        labels_in_fn: vec![],
-    });
-    sess.abort_if_errors();
-    named_region_map
+    sess.track_errors(|| {
+        krate.visit_all_items(&mut LifetimeContext {
+            sess: sess,
+            named_region_map: &mut named_region_map,
+            scope: &ROOT_SCOPE,
+            def_map: def_map,
+            trait_ref_hack: false,
+            labels_in_fn: vec![],
+        });
+    })?;
+    Ok(named_region_map)
 }
 
 impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
@@ -172,20 +180,20 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
     }
 
     fn visit_fn(&mut self, fk: FnKind<'v>, fd: &'v hir::FnDecl,
-                b: &'v hir::Block, s: Span, _: ast::NodeId) {
+                b: &'v hir::Block, s: Span, fn_id: ast::NodeId) {
         match fk {
-            FnKind::ItemFn(_, generics, _, _, _, _) => {
+            FnKind::ItemFn(_, generics, _, _, _, _, _) => {
                 self.visit_early_late(subst::FnSpace, generics, |this| {
-                    this.walk_fn(fk, fd, b, s)
+                    this.add_scope_and_walk_fn(fk, fd, b, s, fn_id)
                 })
             }
-            FnKind::Method(_, sig, _) => {
+            FnKind::Method(_, sig, _, _) => {
                 self.visit_early_late(subst::FnSpace, &sig.generics, |this| {
-                    this.walk_fn(fk, fd, b, s)
+                    this.add_scope_and_walk_fn(fk, fd, b, s, fn_id)
                 })
             }
-            FnKind::Closure => {
-                self.walk_fn(fk, fd, b, s)
+            FnKind::Closure(_) => {
+                self.add_scope_and_walk_fn(fk, fd, b, s, fn_id)
             }
         }
     }
@@ -204,8 +212,8 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
                 // if this path references a trait, then this will resolve to
                 // a trait ref, which introduces a binding scope.
                 match self.def_map.get(&ty.id).map(|d| (d.base_def, d.depth)) {
-                    Some((def::DefTrait(..), 0)) => {
-                        self.with(LateScope(&Vec::new(), self.scope), |_, this| {
+                    Some((Def::Trait(..), 0)) => {
+                        self.with(LateScope(&[], self.scope), |_, this| {
                             this.visit_path(path, ty.id);
                         });
                     }
@@ -236,12 +244,6 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
         replace(&mut self.labels_in_fn, saved);
     }
 
-    fn visit_block(&mut self, b: &hir::Block) {
-        self.with(BlockScope(region::DestructionScopeData::new(b.id),
-                             self.scope),
-                  |_, this| intravisit::walk_block(this, b));
-    }
-
     fn visit_lifetime(&mut self, lifetime_ref: &hir::Lifetime) {
         if lifetime_ref.name == special_idents::static_lifetime.name {
             self.insert_lifetime(lifetime_ref, DefStaticRegion);
@@ -254,7 +256,7 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
         for ty_param in generics.ty_params.iter() {
             walk_list!(self, visit_ty_param_bound, &ty_param.bounds);
             match ty_param.default {
-                Some(ref ty) => self.visit_ty(&**ty),
+                Some(ref ty) => self.visit_ty(&ty),
                 None => {}
             }
         }
@@ -269,13 +271,13 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
                         let result = self.with(LateScope(bound_lifetimes, self.scope),
                                                |old_scope, this| {
                             this.check_lifetime_defs(old_scope, bound_lifetimes);
-                            this.visit_ty(&**bounded_ty);
+                            this.visit_ty(&bounded_ty);
                             walk_list!(this, visit_ty_param_bound, bounds);
                         });
                         self.trait_ref_hack = false;
                         result
                     } else {
-                        self.visit_ty(&**bounded_ty);
+                        self.visit_ty(&bounded_ty);
                         walk_list!(self, visit_ty_param_bound, bounds);
                     }
                 }
@@ -293,7 +295,7 @@ impl<'a, 'v> Visitor<'v> for LifetimeContext<'a> {
                                                                          ref ty,
                                                                          .. }) => {
                     self.visit_path(path, id);
-                    self.visit_ty(&**ty);
+                    self.visit_ty(&ty);
                 }
             }
         }
@@ -350,25 +352,25 @@ impl ShadowKind {
     }
 }
 
-fn signal_shadowing_problem(
-    sess: &Session, name: ast::Name, orig: Original, shadower: Shadower) {
-    if let (ShadowKind::Lifetime, ShadowKind::Lifetime) = (orig.kind, shadower.kind) {
+fn signal_shadowing_problem(sess: &Session, name: ast::Name, orig: Original, shadower: Shadower) {
+    let mut err = if let (ShadowKind::Lifetime, ShadowKind::Lifetime) = (orig.kind, shadower.kind) {
         // lifetime/lifetime shadowing is an error
-        span_err!(sess, shadower.span, E0496,
-                  "{} name `{}` shadows a \
-                   {} name that is already in scope",
-                  shadower.kind.desc(), name, orig.kind.desc());
+        struct_span_err!(sess, shadower.span, E0496,
+                         "{} name `{}` shadows a \
+                          {} name that is already in scope",
+                         shadower.kind.desc(), name, orig.kind.desc())
     } else {
         // shadowing involving a label is only a warning, due to issues with
         // labels and lifetimes not being macro-hygienic.
-        sess.span_warn(shadower.span,
-                      &format!("{} name `{}` shadows a \
-                                {} name that is already in scope",
-                               shadower.kind.desc(), name, orig.kind.desc()));
-    }
-    sess.span_note(orig.span,
-                   &format!("shadowed {} `{}` declared here",
-                            orig.kind.desc(), name));
+        sess.struct_span_warn(shadower.span,
+                              &format!("{} name `{}` shadows a \
+                                        {} name that is already in scope",
+                                       shadower.kind.desc(), name, orig.kind.desc()))
+    };
+    err.span_note(orig.span,
+                  &format!("shadowed {} `{}` declared here",
+                           orig.kind.desc(), name));
+    err.emit();
 }
 
 // Adds all labels in `b` to `ctxt.labels_in_fn`, signalling a warning
@@ -426,7 +428,7 @@ fn extract_labels<'v, 'a>(ctxt: &mut LifetimeContext<'a>, b: &'v hir::Block) {
     fn expression_label(ex: &hir::Expr) -> Option<ast::Name> {
         match ex.node {
             hir::ExprWhile(_, _, Some(label)) |
-            hir::ExprLoop(_, Some(label)) => Some(label.name),
+            hir::ExprLoop(_, Some(label)) => Some(label.unhygienic_name),
             _ => None,
         }
     }
@@ -437,7 +439,7 @@ fn extract_labels<'v, 'a>(ctxt: &mut LifetimeContext<'a>, b: &'v hir::Block) {
                                            label_span: Span) {
         loop {
             match *scope {
-                BlockScope(_, s) => { scope = s; }
+                FnScope { s, .. } => { scope = s; }
                 RootScope => { return; }
 
                 EarlyScope(_, lifetimes, s) |
@@ -461,25 +463,24 @@ fn extract_labels<'v, 'a>(ctxt: &mut LifetimeContext<'a>, b: &'v hir::Block) {
 }
 
 impl<'a> LifetimeContext<'a> {
-    // This is just like intravisit::walk_fn, except that it extracts the
-    // labels of the function body and swaps them in before visiting
-    // the function body itself.
-    fn walk_fn<'b>(&mut self,
-                   fk: FnKind,
-                   fd: &hir::FnDecl,
-                   fb: &'b hir::Block,
-                   _span: Span) {
+    fn add_scope_and_walk_fn<'b>(&mut self,
+                                 fk: FnKind,
+                                 fd: &hir::FnDecl,
+                                 fb: &'b hir::Block,
+                                 _span: Span,
+                                 fn_id: ast::NodeId) {
+
         match fk {
-            FnKind::ItemFn(_, generics, _, _, _, _) => {
+            FnKind::ItemFn(_, generics, _, _, _, _, _) => {
                 intravisit::walk_fn_decl(self, fd);
                 self.visit_generics(generics);
             }
-            FnKind::Method(_, sig, _) => {
+            FnKind::Method(_, sig, _, _) => {
                 intravisit::walk_fn_decl(self, fd);
                 self.visit_generics(&sig.generics);
                 self.visit_explicit_self(&sig.explicit_self);
             }
-            FnKind::Closure => {
+            FnKind::Closure(_) => {
                 intravisit::walk_fn_decl(self, fd);
             }
         }
@@ -488,7 +489,8 @@ impl<'a> LifetimeContext<'a> {
         // `self.labels_in_fn`.
         extract_labels(self, fb);
 
-        self.visit_block(fb);
+        self.with(FnScope { fn_id: fn_id, body_id: fb.id, s: self.scope },
+                  |_old_scope, this| this.visit_block(fb))
     }
 
     fn with<F>(&mut self, wrap_scope: ScopeChain, f: F) where
@@ -559,8 +561,11 @@ impl<'a> LifetimeContext<'a> {
         let mut scope = self.scope;
         loop {
             match *scope {
-                BlockScope(blk_scope, s) => {
-                    return self.resolve_free_lifetime_ref(blk_scope, lifetime_ref, s);
+                FnScope {fn_id, body_id, s } => {
+                    return self.resolve_free_lifetime_ref(
+                        region::CallSiteScopeData { fn_id: fn_id, body_id: body_id },
+                        lifetime_ref,
+                        s);
                 }
 
                 RootScope => {
@@ -604,7 +609,7 @@ impl<'a> LifetimeContext<'a> {
     }
 
     fn resolve_free_lifetime_ref(&mut self,
-                                 scope_data: region::DestructionScopeData,
+                                 scope_data: region::CallSiteScopeData,
                                  lifetime_ref: &hir::Lifetime,
                                  scope: Scope) {
         debug!("resolve_free_lifetime_ref \
@@ -622,8 +627,10 @@ impl<'a> LifetimeContext<'a> {
                     scope_data: {:?} scope: {:?} search_result: {:?}",
                    scope_data, scope, search_result);
             match *scope {
-                BlockScope(blk_scope_data, s) => {
-                    scope_data = blk_scope_data;
+                FnScope { fn_id, body_id, s } => {
+                    scope_data = region::CallSiteScopeData {
+                        fn_id: fn_id, body_id: body_id
+                    };
                     scope = s;
                 }
 
@@ -661,7 +668,7 @@ impl<'a> LifetimeContext<'a> {
                     lifetime_ref.name);
     }
 
-    fn check_lifetime_defs(&mut self, old_scope: Scope, lifetimes: &Vec<hir::LifetimeDef>) {
+    fn check_lifetime_defs(&mut self, old_scope: Scope, lifetimes: &[hir::LifetimeDef]) {
         for i in 0..lifetimes.len() {
             let lifetime_i = &lifetimes[i];
 
@@ -711,7 +718,7 @@ impl<'a> LifetimeContext<'a> {
 
         loop {
             match *old_scope {
-                BlockScope(_, s) => {
+                FnScope { s, .. } => {
                     old_scope = s;
                 }
 
@@ -740,9 +747,9 @@ impl<'a> LifetimeContext<'a> {
                        lifetime_ref: &hir::Lifetime,
                        def: DefRegion) {
         if lifetime_ref.id == ast::DUMMY_NODE_ID {
-            self.sess.span_bug(lifetime_ref.span,
-                               "lifetime reference not renumbered, \
-                               probably a bug in syntax::fold");
+            span_bug!(lifetime_ref.span,
+                      "lifetime reference not renumbered, \
+                       probably a bug in syntax::fold");
         }
 
         debug!("lifetime_ref={:?} id={:?} resolved to {:?}",
@@ -753,7 +760,7 @@ impl<'a> LifetimeContext<'a> {
     }
 }
 
-fn search_lifetimes<'a>(lifetimes: &'a Vec<hir::LifetimeDef>,
+fn search_lifetimes<'a>(lifetimes: &'a [hir::LifetimeDef],
                     lifetime_ref: &hir::Lifetime)
                     -> Option<(u32, &'a hir::Lifetime)> {
     for (i, lifetime_decl) in lifetimes.iter().enumerate() {
@@ -803,7 +810,7 @@ fn early_bound_lifetime_names(generics: &hir::Generics) -> Vec<ast::Name> {
                 &hir::WherePredicate::BoundPredicate(hir::WhereBoundPredicate{ref bounds,
                                                                               ref bounded_ty,
                                                                               ..}) => {
-                    collector.visit_ty(&**bounded_ty);
+                    collector.visit_ty(&bounded_ty);
                     walk_list!(&mut collector, visit_ty_param_bound, bounds);
                 }
                 &hir::WherePredicate::RegionPredicate(hir::WhereRegionPredicate{ref lifetime,
@@ -815,7 +822,7 @@ fn early_bound_lifetime_names(generics: &hir::Generics) -> Vec<ast::Name> {
                         collector.visit_lifetime(bound);
                     }
                 }
-                &hir::WherePredicate::EqPredicate(_) => unimplemented!()
+                &hir::WherePredicate::EqPredicate(_) => bug!("unimplemented")
             }
         }
     }
@@ -864,7 +871,7 @@ impl<'a> fmt::Debug for ScopeChain<'a> {
         match *self {
             EarlyScope(space, defs, _) => write!(fmt, "EarlyScope({:?}, {:?})", space, defs),
             LateScope(defs, _) => write!(fmt, "LateScope({:?})", defs),
-            BlockScope(id, _) => write!(fmt, "BlockScope({:?})", id),
+            FnScope { fn_id, body_id, s: _ } => write!(fmt, "FnScope({:?}, {:?})", fn_id, body_id),
             RootScope => write!(fmt, "RootScope"),
         }
     }

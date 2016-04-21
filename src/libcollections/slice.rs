@@ -78,25 +78,19 @@
 //! * Further methods that return iterators are `.split()`, `.splitn()`,
 //!   `.chunks()`, `.windows()` and more.
 //!
-//! *[See also the slice primitive type](../primitive.slice.html).*
+//! *[See also the slice primitive type](../../std/primitive.slice.html).*
 #![stable(feature = "rust1", since = "1.0.0")]
 
 // Many of the usings in this module are only used in the test configuration.
 // It's cleaner to just turn off the unused_imports warning than to fix them.
-#![allow(unused_imports)]
+#![cfg_attr(test, allow(unused_imports, dead_code))]
 
 use alloc::boxed::Box;
-use core::clone::Clone;
 use core::cmp::Ordering::{self, Greater, Less};
-use core::cmp::{self, Ord, PartialEq};
-use core::iter::Iterator;
-use core::marker::Sized;
+use core::cmp;
 use core::mem::size_of;
 use core::mem;
-use core::ops::FnMut;
-use core::option::Option::{self, Some, None};
 use core::ptr;
-use core::result::Result;
 use core::slice as core_slice;
 
 use borrow::{Borrow, BorrowMut, ToOwned};
@@ -110,9 +104,6 @@ pub use core::slice::{Iter, IterMut};
 pub use core::slice::{SplitMut, ChunksMut, Split};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::slice::{SplitN, RSplitN, SplitNMut, RSplitNMut};
-#[unstable(feature = "ref_slice", issue = "27774")]
-#[allow(deprecated)]
-pub use core::slice::{bytes, mut_ref_slice, ref_slice};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::slice::{from_raw_parts, from_raw_parts_mut};
 
@@ -136,12 +127,7 @@ pub use self::hack::to_vec;
 // `test_permutations` test
 mod hack {
     use alloc::boxed::Box;
-    use core::clone::Clone;
-    #[cfg(test)]
-    use core::iter::Iterator;
     use core::mem;
-    #[cfg(test)]
-    use core::option::Option::{Some, None};
 
     #[cfg(test)]
     use string::ToString;
@@ -160,7 +146,7 @@ mod hack {
         where T: Clone
     {
         let mut vector = Vec::with_capacity(s.len());
-        vector.push_all(s);
+        vector.extend_from_slice(s);
         vector
     }
 }
@@ -418,7 +404,7 @@ impl<T> [T] {
     }
 
     /// Returns an iterator over `size` elements of the slice at a
-    /// time. The chunks do not overlap. If `size` does not divide the
+    /// time. The chunks are slices and do not overlap. If `size` does not divide the
     /// length of the slice, then the last chunk will not have length
     /// `size`.
     ///
@@ -444,7 +430,7 @@ impl<T> [T] {
     }
 
     /// Returns an iterator over `chunk_size` elements of the slice at a time.
-    /// The chunks are mutable and do not overlap. If `chunk_size` does
+    /// The chunks are mutable slices, and do not overlap. If `chunk_size` does
     /// not divide the length of the slice, then the last chunk will not
     /// have length `chunk_size`.
     ///
@@ -755,6 +741,44 @@ impl<T> [T] {
         core_slice::SliceExt::binary_search_by(self, f)
     }
 
+    /// Binary search a sorted slice with a key extraction function.
+    ///
+    /// Assumes that the slice is sorted by the key, for instance with
+    /// `sort_by_key` using the same key extraction function.
+    ///
+    /// If a matching value is found then returns `Ok`, containing the
+    /// index for the matched element; if no match is found then `Err`
+    /// is returned, containing the index where a matching element could
+    /// be inserted while maintaining sorted order.
+    ///
+    /// # Examples
+    ///
+    /// Looks up a series of four elements in a slice of pairs sorted by
+    /// their second elements. The first is found, with a uniquely
+    /// determined position; the second and third are not found; the
+    /// fourth could match any position in `[1,4]`.
+    ///
+    /// ```rust
+    /// #![feature(slice_binary_search_by_key)]
+    /// let s = [(0, 0), (2, 1), (4, 1), (5, 1), (3, 1),
+    ///          (1, 2), (2, 3), (4, 5), (5, 8), (3, 13),
+    ///          (1, 21), (2, 34), (4, 55)];
+    ///
+    /// assert_eq!(s.binary_search_by_key(&13, |&(a,b)| b),  Ok(9));
+    /// assert_eq!(s.binary_search_by_key(&4, |&(a,b)| b),   Err(7));
+    /// assert_eq!(s.binary_search_by_key(&100, |&(a,b)| b), Err(13));
+    /// let r = s.binary_search_by_key(&1, |&(a,b)| b);
+    /// assert!(match r { Ok(1...4) => true, _ => false, });
+    /// ```
+    #[unstable(feature = "slice_binary_search_by_key", reason = "recently added", issue = "33018")]
+    #[inline]
+    pub fn binary_search_by_key<B, F>(&self, b: &B, f: F) -> Result<usize, usize>
+        where F: FnMut(&T) -> B,
+              B: Ord
+    {
+        core_slice::SliceExt::binary_search_by_key(self, b, f)
+    }
+
     /// Sorts the slice, in place.
     ///
     /// This is equivalent to `self.sort_by(|a, b| a.cmp(b))`.
@@ -775,6 +799,30 @@ impl<T> [T] {
         where T: Ord
     {
         self.sort_by(|a, b| a.cmp(b))
+    }
+
+    /// Sorts the slice, in place, using `key` to extract a key by which to
+    /// order the sort by.
+    ///
+    /// This sort is `O(n log n)` worst-case and stable, but allocates
+    /// approximately `2 * n`, where `n` is the length of `self`.
+    ///
+    /// This is a stable sort.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let mut v = [-5i32, 4, 1, -3, 2];
+    ///
+    /// v.sort_by_key(|k| k.abs());
+    /// assert!(v == [1, 2, -3, 4, -5]);
+    /// ```
+    #[stable(feature = "slice_sort_by_key", since = "1.7.0")]
+    #[inline]
+    pub fn sort_by_key<B, F>(&mut self, mut f: F)
+        where F: FnMut(&T) -> B, B: Ord
+    {
+        self.sort_by(|a, b| f(a).cmp(&f(b)))
     }
 
     /// Sorts the slice, in place, using `compare` to compare
@@ -802,31 +850,50 @@ impl<T> [T] {
         merge_sort(self, compare)
     }
 
-    /// Copies as many elements from `src` as it can into `self` (the
-    /// shorter of `self.len()` and `src.len()`). Returns the number
-    /// of elements copied.
+    /// Copies the elements from `src` into `self`.
+    ///
+    /// The length of this slice must be the same as the slice passed in.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
     ///
     /// # Example
     ///
     /// ```rust
-    /// #![feature(clone_from_slice)]
-    ///
     /// let mut dst = [0, 0, 0];
-    /// let src = [1, 2];
+    /// let src = [1, 2, 3];
     ///
-    /// assert!(dst.clone_from_slice(&src) == 2);
-    /// assert!(dst == [1, 2, 0]);
-    ///
-    /// let src2 = [3, 4, 5, 6];
-    /// assert!(dst.clone_from_slice(&src2) == 3);
-    /// assert!(dst == [3, 4, 5]);
+    /// dst.clone_from_slice(&src);
+    /// assert!(dst == [1, 2, 3]);
     /// ```
-    #[unstable(feature = "clone_from_slice", issue = "27750")]
-    pub fn clone_from_slice(&mut self, src: &[T]) -> usize
-        where T: Clone
-    {
+    #[stable(feature = "clone_from_slice", since = "1.7.0")]
+    pub fn clone_from_slice(&mut self, src: &[T]) where T: Clone {
         core_slice::SliceExt::clone_from_slice(self, src)
     }
+
+    /// Copies all elements from `src` into `self`, using a memcpy.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let mut dst = [0, 0, 0];
+    /// let src = [1, 2, 3];
+    ///
+    /// dst.copy_from_slice(&src);
+    /// assert_eq!(src, dst);
+    /// ```
+    #[stable(feature = "copy_from_slice", since = "1.9.0")]
+    pub fn copy_from_slice(&mut self, src: &[T]) where T: Copy {
+        core_slice::SliceExt::copy_from_slice(self, src)
+    }
+
 
     /// Copies `self` into a new `Vec`.
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -882,15 +949,6 @@ pub trait SliceConcatExt<T: ?Sized> {
     #[stable(feature = "rename_connect_to_join", since = "1.3.0")]
     fn join(&self, sep: &T) -> Self::Output;
 
-    /// Flattens a slice of `T` into a single value `Self::Output`, placing a
-    /// given separator between each.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #![allow(deprecated)]
-    /// assert_eq!(["hello", "world"].connect(" "), "hello world");
-    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_deprecated(since = "1.3.0", reason = "renamed to join")]
     fn connect(&self, sep: &T) -> Self::Output;
@@ -906,7 +964,7 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
         let size = self.iter().fold(0, |acc, v| acc + v.borrow().len());
         let mut result = Vec::with_capacity(size);
         for v in self {
-            result.push_all(v.borrow())
+            result.extend_from_slice(v.borrow())
         }
         result
     }
@@ -921,7 +979,7 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
             } else {
                 result.push(sep.clone())
             }
-            result.push_all(v.borrow())
+            result.extend_from_slice(v.borrow())
         }
         result
     }

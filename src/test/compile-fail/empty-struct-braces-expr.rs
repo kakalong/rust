@@ -10,17 +10,25 @@
 
 // Can't use empty braced struct as constant or constructor function
 
-#![feature(braced_empty_structs)]
+// aux-build:empty-struct.rs
+
+extern crate empty_struct;
+use empty_struct::*;
 
 struct Empty1 {}
 
 enum E {
-    Empty2 {}
+    Empty3 {}
 }
 
 fn main() {
     let e1 = Empty1; //~ ERROR `Empty1` is the name of a struct or struct variant
     let e1 = Empty1(); //~ ERROR `Empty1` is the name of a struct or struct variant
-    let e2 = E::Empty2; //~ ERROR `E::Empty2` is the name of a struct or struct variant
-    let e2 = E::Empty2(); //~ ERROR `E::Empty2` is the name of a struct or struct variant
+    let e3 = E::Empty3; //~ ERROR `E::Empty3` is the name of a struct or struct variant
+    let e3 = E::Empty3(); //~ ERROR `E::Empty3` is the name of a struct or struct variant
+
+    let xe1 = XEmpty1; //~ ERROR `XEmpty1` is the name of a struct or struct variant
+    let xe1 = XEmpty1(); //~ ERROR `XEmpty1` is the name of a struct or struct variant
+    let xe3 = XE::Empty3; //~ ERROR no associated item named `Empty3` found for type
+    let xe3 = XE::Empty3(); //~ ERROR no associated item named `Empty3` found for type
 }

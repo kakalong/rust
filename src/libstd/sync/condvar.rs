@@ -129,7 +129,7 @@ impl Condvar {
     /// the predicate must always be checked each time this function returns to
     /// protect against spurious wakeups.
     ///
-    /// # Failure
+    /// # Errors
     ///
     /// This function will return an error if the mutex being waited on is
     /// poisoned when this thread re-acquires the lock. For more information,
@@ -167,13 +167,12 @@ impl Condvar {
     /// returns, regardless of whether the timeout elapsed or not.
     #[stable(feature = "rust1", since = "1.0.0")]
     #[rustc_deprecated(since = "1.6.0", reason = "replaced by `std::sync::Condvar::wait_timeout`")]
-    #[allow(deprecated)]
     pub fn wait_timeout_ms<'a, T>(&self, guard: MutexGuard<'a, T>, ms: u32)
                                   -> LockResult<(MutexGuard<'a, T>, bool)> {
-        unsafe {
-            let me: &'static Condvar = &*(self as *const _);
-            me.inner.wait_timeout_ms(guard, ms)
-        }
+        let res = self.wait_timeout(guard, Duration::from_millis(ms as u64));
+        poison::map_result(res, |(a, b)| {
+            (a, !b.timed_out())
+        })
     }
 
     /// Waits on this condition variable for a notification, timing out after a
@@ -200,27 +199,6 @@ impl Condvar {
         }
     }
 
-    /// Waits on this condition variable for a notification, timing out after a
-    /// specified duration.
-    ///
-    /// The semantics of this function are equivalent to `wait_timeout` except
-    /// that the implementation will repeatedly wait while the duration has not
-    /// passed and the provided function returns `false`.
-    #[unstable(feature = "wait_timeout_with",
-               reason = "unsure if this API is broadly needed or what form it should take",
-               issue = "27748")]
-    pub fn wait_timeout_with<'a, T, F>(&self,
-                                       guard: MutexGuard<'a, T>,
-                                       dur: Duration,
-                                       f: F)
-                                       -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>
-            where F: FnMut(LockResult<&mut T>) -> bool {
-        unsafe {
-            let me: &'static Condvar = &*(self as *const _);
-            me.inner.wait_timeout_with(guard, dur, f)
-        }
-    }
-
     /// Wakes up one blocked thread on this condvar.
     ///
     /// If there is a blocked thread on this condition variable, then it will
@@ -240,6 +218,13 @@ impl Condvar {
     /// To wake up only one thread, see `notify_one()`.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn notify_all(&self) { unsafe { self.inner.inner.notify_all() } }
+}
+
+#[stable(feature = "condvar_default", since = "1.9.0")]
+impl Default for Condvar {
+    fn default() -> Condvar {
+        Condvar::new()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -280,26 +265,6 @@ impl StaticCondvar {
             Err(PoisonError::new(guard))
         } else {
             Ok(guard)
-        }
-    }
-
-    /// Waits on this condition variable for a notification, timing out after a
-    /// specified duration.
-    ///
-    /// See `Condvar::wait_timeout`.
-    #[unstable(feature = "static_condvar",
-               reason = "may be merged with Condvar in the future",
-               issue = "27717")]
-    #[rustc_deprecated(since = "1.6.0",
-                       reason = "replaced by `std::sync::StaticCondvar::wait_timeout`")]
-    pub fn wait_timeout_ms<'a, T>(&'static self, guard: MutexGuard<'a, T>, ms: u32)
-                                  -> LockResult<(MutexGuard<'a, T>, bool)> {
-        match self.wait_timeout(guard, Duration::from_millis(ms as u64)) {
-            Ok((guard, timed_out)) => Ok((guard, !timed_out.timed_out())),
-            Err(poison) => {
-                let (guard, timed_out) = poison.into_inner();
-                Err(PoisonError::new((guard, !timed_out.timed_out())))
-            }
         }
     }
 
@@ -510,15 +475,15 @@ mod tests {
         static M: StaticMutex = StaticMutex::new();
 
         let g = M.lock().unwrap();
-        let (g, _no_timeout) = C.wait_timeout_ms(g, 1).unwrap();
+        let (g, _no_timeout) = C.wait_timeout(g, Duration::from_millis(1)).unwrap();
         // spurious wakeups mean this isn't necessarily true
         // assert!(!no_timeout);
         let _t = thread::spawn(move || {
             let _g = M.lock().unwrap();
             C.notify_one();
         });
-        let (g, no_timeout) = C.wait_timeout_ms(g, u32::MAX).unwrap();
-        assert!(no_timeout);
+        let (g, timeout_res) = C.wait_timeout(g, Duration::from_millis(u32::MAX as u64)).unwrap();
+        assert!(!timeout_res.timed_out());
         drop(g);
         unsafe { C.destroy(); M.destroy(); }
     }

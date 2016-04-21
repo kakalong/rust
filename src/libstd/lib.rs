@@ -25,7 +25,7 @@
 //!
 //! # How to read this documentation
 //!
-//! If you already know the name of what you are looking for the fastest way to
+//! If you already know the name of what you are looking for, the fastest way to
 //! find it is to use the <a href="#" onclick="focusSearchBar();">search
 //! bar</a> at the top of the page.
 //!
@@ -152,7 +152,7 @@
 //! [`mpsc`], which contains the channel types for message passing.
 //!
 //! [I/O]: io/index.html
-//! [MIN]: i32/constant.MIN.html
+//! [`MIN`]: i32/constant.MIN.html
 //! [TCP]: net/struct.TcpStream.html
 //! [The Rust Prelude]: prelude/index.html
 //! [UDP]: net/struct.UdpSocket.html
@@ -190,7 +190,7 @@
 //! [`thread`]: thread/index.html
 //! [`use std::env`]: env/index.html
 //! [`use`]: ../book/crates-and-modules.html#importing-modules-with-use
-//! [crate root]: ../book/crates-and-modules.html#basic-terminology:-crates-and-modules
+//! [crate root]: ../book/crates-and-modules.html#basic-terminology-crates-and-modules
 //! [crates.io]: https://crates.io
 //! [deref coercions]: ../book/deref-coercions.html
 //! [files]: fs/struct.File.html
@@ -198,11 +198,8 @@
 //! [other]: #what-is-in-the-standard-library-documentation
 //! [primitive types]: ../book/primitive-types.html
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "std"]
 #![stable(feature = "rust1", since = "1.0.0")]
-#![cfg_attr(stage0, staged_api)]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
@@ -213,11 +210,6 @@
        test(no_crate_inject, attr(deny(warnings))),
        test(attr(allow(dead_code, deprecated, unused_variables, unused_mut))))]
 
-#![cfg_attr(stage0, allow(unused_attributes))]
-#![cfg_attr(stage0, allow(improper_ctypes))]
-
-#![cfg_attr(stage0, feature(rustc_attrs))]
-#![cfg_attr(stage0, allow(unused_attributes))]
 #![feature(alloc)]
 #![feature(allow_internal_unstable)]
 #![feature(asm)]
@@ -225,23 +217,21 @@
 #![feature(borrow_state)]
 #![feature(box_syntax)]
 #![feature(cfg_target_vendor)]
+#![feature(cfg_target_thread_local)]
 #![feature(char_internals)]
-#![feature(clone_from_slice)]
 #![feature(collections)]
 #![feature(collections_bound)]
 #![feature(const_fn)]
-#![feature(core)]
 #![feature(core_float)]
 #![feature(core_intrinsics)]
-#![feature(core_simd)]
-#![feature(decode_utf16)]
-#![feature(drain)]
-#![feature(drop_in_place)]
 #![feature(dropck_parametricity)]
 #![feature(float_extras)]
 #![feature(float_from_str_radix)]
 #![feature(fnbox)]
+#![feature(fn_traits)]
 #![feature(heap_api)]
+#![feature(hashmap_hasher)]
+#![feature(inclusive_range)]
 #![feature(int_error_internals)]
 #![feature(into_cow)]
 #![feature(lang_items)]
@@ -249,18 +239,24 @@
 #![feature(link_args)]
 #![feature(linkage)]
 #![feature(macro_reexport)]
-#![feature(no_std)]
+#![cfg_attr(test, feature(map_values_mut))]
+#![feature(num_bits_bytes)]
+#![feature(old_wrapping)]
+#![feature(on_unimplemented)]
 #![feature(oom)]
 #![feature(optin_builtin_traits)]
 #![feature(placement_in_syntax)]
 #![feature(rand)]
-#![feature(range_inclusive)]
 #![feature(raw)]
+#![feature(repr_simd)]
 #![feature(reflect_marker)]
+#![feature(rustc_attrs)]
+#![feature(shared)]
 #![feature(slice_bytes)]
 #![feature(slice_concat_ext)]
 #![feature(slice_patterns)]
 #![feature(staged_api)]
+#![feature(stmt_expr_attributes)]
 #![feature(str_char)]
 #![feature(str_internals)]
 #![feature(str_utf16)]
@@ -272,23 +268,27 @@
 #![feature(unsafe_no_drop_flag, filling_drop)]
 #![feature(unwind_attributes)]
 #![feature(vec_push_all)]
-#![feature(wrapping)]
 #![feature(zero_one)]
+#![feature(question_mark)]
+
+// Issue# 30592: Systematically use alloc_system during stage0 since jemalloc
+// might be unavailable or disabled
+#![cfg_attr(stage0, feature(alloc_system))]
 
 // Don't link to std. We are std.
 #![no_std]
 
 #![deny(missing_docs)]
 #![allow(unused_features)] // std may use features in a platform-specific way
+#![cfg_attr(not(stage0), deny(warnings))]
 
 #[cfg(test)] extern crate test;
-#[cfg(test)] #[macro_use] extern crate log;
 
 // We want to reexport a few macros from core but libcore has already been
 // imported by the compiler (via our #[no_std] attribute) In this case we just
 // add a new crate name so we can attach the reexports to it.
 #[macro_reexport(assert, assert_eq, debug_assert, debug_assert_eq,
-                 unreachable, unimplemented, write, writeln)]
+                 unreachable, unimplemented, write, writeln, try)]
 extern crate core as __core;
 
 #[macro_use]
@@ -299,6 +299,9 @@ extern crate collections as core_collections;
 extern crate alloc;
 extern crate rustc_unicode;
 extern crate libc;
+
+#[cfg(stage0)]
+extern crate alloc_system;
 
 // Make std testable by not duplicating lang items and other globals. See #2912
 #[cfg(test)] extern crate std as realstd;
@@ -333,9 +336,6 @@ pub use core::ops;
 pub use core::ptr;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::raw;
-#[stable(feature = "rust1", since = "1.0.0")]
-#[allow(deprecated)]
-pub use core::simd;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::result;
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -419,17 +419,18 @@ pub mod num;
 pub mod thread;
 
 pub mod collections;
-pub mod dynamic_lib;
 pub mod env;
 pub mod ffi;
 pub mod fs;
 pub mod io;
 pub mod net;
 pub mod os;
+pub mod panic;
 pub mod path;
 pub mod process;
 pub mod sync;
 pub mod time;
+mod memchr;
 
 #[macro_use]
 #[path = "sys/common/mod.rs"] mod sys_common;

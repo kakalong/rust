@@ -13,7 +13,6 @@ use io::prelude::*;
 
 use cmp;
 use io::{self, SeekFrom, Error, ErrorKind};
-use slice;
 
 /// A `Cursor` wraps another type and provides it with a
 /// [`Seek`](trait.Seek.html) implementation.
@@ -214,7 +213,7 @@ impl<T> io::Seek for Cursor<T> where T: AsRef<[u8]> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Read for Cursor<T> where T: AsRef<[u8]> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = try!(Read::read(&mut try!(self.fill_buf()), buf));
+        let n = Read::read(&mut self.fill_buf()?, buf)?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -233,7 +232,7 @@ impl<T> BufRead for Cursor<T> where T: AsRef<[u8]> {
 impl<'a> Write for Cursor<&'a mut [u8]> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         let pos = cmp::min(self.pos, self.inner.len() as u64);
-        let amt = try!((&mut self.inner[(pos as usize)..]).write(data));
+        let amt = (&mut self.inner[(pos as usize)..]).write(data)?;
         self.pos += amt as u64;
         Ok(amt)
     }
@@ -253,10 +252,13 @@ impl Write for Cursor<Vec<u8>> {
 
         // Figure out what bytes will be used to overwrite what's currently
         // there (left), and what will be appended on the end (right)
-        let space = self.inner.len() - pos as usize;
-        let (left, right) = buf.split_at(cmp::min(space, buf.len()));
-        slice::bytes::copy_memory(left, &mut self.inner[(pos as usize)..]);
-        self.inner.push_all(right);
+        {
+            let pos = pos as usize;
+            let space = self.inner.len() - pos;
+            let (left, right) = buf.split_at(cmp::min(space, buf.len()));
+            self.inner[pos..pos + left.len()].copy_from_slice(left);
+            self.inner.extend_from_slice(right);
+        }
 
         // Bump us forward
         self.set_position(pos + buf.len() as u64);
@@ -269,7 +271,7 @@ impl Write for Cursor<Vec<u8>> {
 impl Write for Cursor<Box<[u8]>> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let pos = cmp::min(self.pos, self.inner.len() as u64);
-        let amt = try!((&mut self.inner[(pos as usize)..]).write(buf));
+        let amt = (&mut self.inner[(pos as usize)..]).write(buf)?;
         self.pos += amt as u64;
         Ok(amt)
     }

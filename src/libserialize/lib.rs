@@ -14,13 +14,10 @@
 Core encoding and decoding interfaces.
 */
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "serialize"]
 #![unstable(feature = "rustc_private",
             reason = "deprecated in favor of rustc-serialize on crates.io",
             issue = "27812")]
-#![cfg_attr(stage0, staged_api)]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
@@ -28,16 +25,15 @@ Core encoding and decoding interfaces.
        html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        test(attr(allow(unused_variables), deny(warnings))))]
+#![cfg_attr(not(stage0), deny(warnings))]
 
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(enumset)]
-#![feature(hashmap_hasher)]
-#![feature(num_bits_bytes)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
-#![feature(str_char)]
 #![feature(unicode)]
+#![feature(question_mark)]
 #![cfg_attr(test, feature(test))]
 
 // test harness access

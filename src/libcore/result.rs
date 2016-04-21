@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Error handling with the `Result` type
+//! Error handling with the `Result` type.
 //!
 //! `Result<T, E>` is the type used for returning and propagating
 //! errors. It is an enum with the variants, `Ok(T)`, representing
@@ -19,7 +19,7 @@
 //! # #[allow(dead_code)]
 //! enum Result<T, E> {
 //!    Ok(T),
-//!    Err(E)
+//!    Err(E),
 //! }
 //! ```
 //!
@@ -39,7 +39,7 @@
 //!         None => Err("invalid header length"),
 //!         Some(&1) => Ok(Version::Version1),
 //!         Some(&2) => Ok(Version::Version2),
-//!         Some(_) => Err("invalid version")
+//!         Some(_) => Err("invalid version"),
 //!     }
 //! }
 //!
@@ -240,7 +240,6 @@ use fmt;
 use iter::{Iterator, DoubleEndedIterator, FromIterator, ExactSizeIterator, IntoIterator};
 use ops::FnOnce;
 use option::Option::{self, None, Some};
-use slice;
 
 /// `Result` is a type that represents either success (`Ok`) or failure (`Err`).
 ///
@@ -251,11 +250,11 @@ use slice;
 pub enum Result<T, E> {
     /// Contains the success value
     #[stable(feature = "rust1", since = "1.0.0")]
-    Ok(T),
+    Ok(#[stable(feature = "rust1", since = "1.0.0")] T),
 
     /// Contains the error value
     #[stable(feature = "rust1", since = "1.0.0")]
-    Err(E)
+    Err(#[stable(feature = "rust1", since = "1.0.0")] E),
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -270,6 +269,8 @@ impl<T, E> Result<T, E> {
     /// Returns true if the result is `Ok`
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<i32, &str> = Ok(-3);
@@ -290,6 +291,8 @@ impl<T, E> Result<T, E> {
     /// Returns true if the result is `Err`
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<i32, &str> = Ok(-3);
@@ -315,6 +318,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
     /// assert_eq!(x.ok(), Some(2));
@@ -337,6 +342,8 @@ impl<T, E> Result<T, E> {
     /// and discarding the success value, if any.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
@@ -363,6 +370,10 @@ impl<T, E> Result<T, E> {
     /// Produces a new `Result`, containing a reference
     /// into the original, leaving the original in place.
     ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
     /// assert_eq!(x.as_ref(), Ok(&2));
@@ -380,6 +391,10 @@ impl<T, E> Result<T, E> {
     }
 
     /// Converts from `Result<T, E>` to `Result<&mut T, &mut E>`
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// fn mutate(r: &mut Result<i32, i32>) {
@@ -403,58 +418,6 @@ impl<T, E> Result<T, E> {
         match *self {
             Ok(ref mut x) => Ok(x),
             Err(ref mut x) => Err(x),
-        }
-    }
-
-    /// Converts from `Result<T, E>` to `&[T]` (without copying)
-    #[inline]
-    #[unstable(feature = "as_slice", reason = "unsure of the utility here",
-               issue = "27776")]
-    #[rustc_deprecated(since = "1.4.0", reason = "niche API, unclear of usefulness")]
-    #[allow(deprecated)]
-    pub fn as_slice(&self) -> &[T] {
-        match *self {
-            Ok(ref x) => slice::ref_slice(x),
-            Err(_) => {
-                // work around lack of implicit coercion from fixed-size array to slice
-                let emp: &[_] = &[];
-                emp
-            }
-        }
-    }
-
-    /// Converts from `Result<T, E>` to `&mut [T]` (without copying)
-    ///
-    /// ```
-    /// #![feature(as_slice)]
-    /// # #![allow(deprecated)]
-    ///
-    /// let mut x: Result<&str, u32> = Ok("Gold");
-    /// {
-    ///     let v = x.as_mut_slice();
-    ///     assert!(v == ["Gold"]);
-    ///     v[0] = "Silver";
-    ///     assert!(v == ["Silver"]);
-    /// }
-    /// assert_eq!(x, Ok("Silver"));
-    ///
-    /// let mut x: Result<&str, u32> = Err(45);
-    /// assert!(x.as_mut_slice().is_empty());
-    /// ```
-    #[inline]
-    #[unstable(feature = "as_slice",
-               reason = "waiting for mut conventions",
-               issue = "27776")]
-    #[rustc_deprecated(since = "1.4.0", reason = "niche API, unclear of usefulness")]
-    #[allow(deprecated)]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        match *self {
-            Ok(ref mut x) => slice::mut_ref_slice(x),
-            Err(_) => {
-                // work around lack of implicit coercion from fixed-size array to slice
-                let emp: &mut [_] = &mut [];
-                emp
-            }
         }
     }
 
@@ -498,6 +461,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// fn stringify(x: u32) -> String { format!("error code: {}", x) }
     ///
@@ -524,6 +489,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let x: Result<u32, &str> = Ok(7);
     /// assert_eq!(x.iter().next(), Some(&7));
@@ -540,6 +507,8 @@ impl<T, E> Result<T, E> {
     /// Returns a mutable iterator over the possibly contained value.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let mut x: Result<u32, &str> = Ok(7);
@@ -565,6 +534,8 @@ impl<T, E> Result<T, E> {
     /// Returns `res` if the result is `Ok`, otherwise returns the `Err` value of `self`.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
@@ -598,6 +569,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// fn sq(x: u32) -> Result<u32, u32> { Ok(x * x) }
     /// fn err(x: u32) -> Result<u32, u32> { Err(x) }
@@ -619,6 +592,8 @@ impl<T, E> Result<T, E> {
     /// Returns `res` if the result is `Err`, otherwise returns the `Ok` value of `self`.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
@@ -652,6 +627,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// fn sq(x: u32) -> Result<u32, u32> { Ok(x * x) }
     /// fn err(x: u32) -> Result<u32, u32> { Err(x) }
@@ -675,6 +652,8 @@ impl<T, E> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let optb = 2;
     /// let x: Result<u32, &str> = Ok(9);
@@ -696,6 +675,8 @@ impl<T, E> Result<T, E> {
     /// If the value is an `Err` then it calls `op` with its value.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// fn count(x: &str) -> usize { x.len() }
@@ -723,6 +704,8 @@ impl<T, E: fmt::Debug> Result<T, E> {
     ///
     /// # Examples
     ///
+    /// Basic usage:
+    ///
     /// ```
     /// let x: Result<u32, &str> = Ok(2);
     /// assert_eq!(x.unwrap(), 2);
@@ -737,17 +720,21 @@ impl<T, E: fmt::Debug> Result<T, E> {
     pub fn unwrap(self) -> T {
         match self {
             Ok(t) => t,
-            Err(e) =>
-                panic!("called `Result::unwrap()` on an `Err` value: {:?}", e)
+            Err(e) => unwrap_failed("called `Result::unwrap()` on an `Err` value", e),
         }
     }
 
     /// Unwraps a result, yielding the content of an `Ok`.
     ///
+    /// # Panics
+    ///
     /// Panics if the value is an `Err`, with a panic message including the
     /// passed message, and the content of the `Err`.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
+    ///
     /// ```{.should_panic}
     /// let x: Result<u32, &str> = Err("emergency failure");
     /// x.expect("Testing expect"); // panics with `Testing expect: emergency failure`
@@ -757,7 +744,7 @@ impl<T, E: fmt::Debug> Result<T, E> {
     pub fn expect(self, msg: &str) -> T {
         match self {
             Ok(t) => t,
-            Err(e) => panic!("{}: {:?}", msg, e),
+            Err(e) => unwrap_failed(msg, e),
         }
     }
 }
@@ -785,11 +772,17 @@ impl<T: fmt::Debug, E> Result<T, E> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn unwrap_err(self) -> E {
         match self {
-            Ok(t) =>
-                panic!("called `Result::unwrap_err()` on an `Ok` value: {:?}", t),
-            Err(e) => e
+            Ok(t) => unwrap_failed("called `Result::unwrap_err()` on an `Ok` value", t),
+            Err(e) => e,
         }
     }
+}
+
+// This is a separate function to reduce the code size of the methods
+#[inline(never)]
+#[cold]
+fn unwrap_failed<E: fmt::Debug>(msg: &str, error: E) -> ! {
+    panic!("{}: {:?}", msg, error)
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -804,6 +797,8 @@ impl<T, E> IntoIterator for Result<T, E> {
     /// Returns a consuming iterator over the possibly contained value.
     ///
     /// # Examples
+    ///
+    /// Basic usage:
     ///
     /// ```
     /// let x: Result<u32, &str> = Ok(5);
@@ -845,6 +840,7 @@ impl<'a, T, E> IntoIterator for &'a mut Result<T, E> {
 /////////////////////////////////////////////////////////////////////////////
 
 /// An iterator over a reference to the `Ok` variant of a `Result`.
+#[derive(Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, T: 'a> { inner: Option<&'a T> }
 
@@ -876,6 +872,7 @@ impl<'a, T> Clone for Iter<'a, T> {
 }
 
 /// An iterator over a mutable reference to the `Ok` variant of a `Result`.
+#[derive(Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IterMut<'a, T: 'a> { inner: Option<&'a mut T> }
 
@@ -902,6 +899,7 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
 impl<'a, T> ExactSizeIterator for IterMut<'a, T> {}
 
 /// An iterator over the value in a `Ok` variant of a `Result`.
+#[derive(Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<T> { inner: Option<T> }
 

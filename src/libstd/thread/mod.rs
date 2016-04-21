@@ -8,7 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Native threads
+//! Native threads.
 //!
 //! ## The threading model
 //!
@@ -166,11 +166,14 @@ use any::Any;
 use cell::UnsafeCell;
 use fmt;
 use io;
+use str;
+use ffi::{CStr, CString};
 use sync::{Mutex, Condvar, Arc};
 use sys::thread as imp;
 use sys_common::thread_info;
 use sys_common::unwind;
 use sys_common::util;
+use sys_common::{AsInner, IntoInner};
 use time::Duration;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -187,10 +190,14 @@ pub use self::local::{LocalKey, LocalKeyState};
            reason = "scoped TLS has yet to have wide enough use to fully \
                      consider stabilizing its interface",
            issue = "27715")]
+#[allow(deprecated)]
 pub use self::scoped_tls::ScopedKey;
 
 #[unstable(feature = "libstd_thread_internals", issue = "0")]
-#[doc(hidden)] pub use self::local::__KeyInner as __LocalKeyInner;
+#[cfg(target_thread_local)]
+#[doc(hidden)] pub use self::local::elf::Key as __ElfLocalKeyInner;
+#[unstable(feature = "libstd_thread_internals", issue = "0")]
+#[doc(hidden)] pub use self::local::os::Key as __OsLocalKeyInner;
 #[unstable(feature = "libstd_thread_internals", issue = "0")]
 #[doc(hidden)] pub use self::scoped_tls::__KeyInner as __ScopedKeyInner;
 
@@ -262,7 +269,7 @@ impl Builder {
         let their_packet = my_packet.clone();
 
         let main = move || {
-            if let Some(name) = their_thread.name() {
+            if let Some(name) = their_thread.cname() {
                 imp::Thread::set_name(name);
             }
             unsafe {
@@ -280,7 +287,7 @@ impl Builder {
 
         Ok(JoinHandle(JoinInner {
             native: unsafe {
-                Some(try!(imp::Thread::new(stack_size, Box::new(main))))
+                Some(imp::Thread::new(stack_size, Box::new(main))?)
             },
             thread: my_thread,
             packet: Packet(my_packet),
@@ -332,57 +339,6 @@ pub fn yield_now() {
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn panicking() -> bool {
     unwind::panicking()
-}
-
-/// Invokes a closure, capturing the cause of panic if one occurs.
-///
-/// This function will return `Ok` with the closure's result if the closure
-/// does not panic, and will return `Err(cause)` if the closure panics. The
-/// `cause` returned is the object with which panic was originally invoked.
-///
-/// It is currently undefined behavior to unwind from Rust code into foreign
-/// code, so this function is particularly useful when Rust is called from
-/// another language (normally C). This can run arbitrary Rust code, capturing a
-/// panic and allowing a graceful handling of the error.
-///
-/// It is **not** recommended to use this function for a general try/catch
-/// mechanism. The `Result` type is more appropriate to use for functions that
-/// can fail on a regular basis.
-///
-/// The closure provided is required to adhere to the `'static` bound to ensure
-/// that it cannot reference data in the parent stack frame, mitigating problems
-/// with exception safety. Furthermore, a `Send` bound is also required,
-/// providing the same safety guarantees as `thread::spawn` (ensuring the
-/// closure is properly isolated from the parent).
-///
-/// # Examples
-///
-/// ```
-/// #![feature(catch_panic)]
-///
-/// use std::thread;
-///
-/// let result = thread::catch_panic(|| {
-///     println!("hello!");
-/// });
-/// assert!(result.is_ok());
-///
-/// let result = thread::catch_panic(|| {
-///     panic!("oh no!");
-/// });
-/// assert!(result.is_err());
-/// ```
-#[unstable(feature = "catch_panic", reason = "recent API addition",
-           issue = "27719")]
-pub fn catch_panic<F, R>(f: F) -> Result<R>
-    where F: FnOnce() -> R + Send + 'static
-{
-    let mut result = None;
-    unsafe {
-        let result = &mut result;
-        try!(unwind::try(move || *result = Some(f())))
-    }
-    Ok(result.unwrap())
 }
 
 /// Puts the current thread to sleep for the specified amount of time.
@@ -496,7 +452,7 @@ pub fn park_timeout(dur: Duration) {
 
 /// The internal representation of a `Thread` handle
 struct Inner {
-    name: Option<String>,
+    name: Option<CString>,      // Guaranteed to be UTF-8
     lock: Mutex<bool>,          // true when there is a buffered unpark
     cvar: Condvar,
 }
@@ -511,9 +467,12 @@ pub struct Thread {
 impl Thread {
     // Used only internally to construct a thread object without spawning
     fn new(name: Option<String>) -> Thread {
+        let cname = name.map(|n| CString::new(n).unwrap_or_else(|_| {
+            panic!("thread name may not contain interior null bytes")
+        }));
         Thread {
             inner: Arc::new(Inner {
-                name: name,
+                name: cname,
                 lock: Mutex::new(false),
                 cvar: Condvar::new(),
             })
@@ -535,6 +494,10 @@ impl Thread {
     /// Gets the thread's name.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn name(&self) -> Option<&str> {
+        self.cname().map(|s| unsafe { str::from_utf8_unchecked(s.to_bytes()) } )
+    }
+
+    fn cname(&self) -> Option<&CStr> {
         self.inner.name.as_ref().map(|s| &**s)
     }
 }
@@ -621,6 +584,14 @@ impl<T> JoinHandle<T> {
     }
 }
 
+impl<T> AsInner<imp::Thread> for JoinHandle<T> {
+    fn as_inner(&self) -> &imp::Thread { self.0.native.as_ref().unwrap() }
+}
+
+impl<T> IntoInner<imp::Thread> for JoinHandle<T> {
+    fn into_inner(self) -> imp::Thread { self.0.native.unwrap() }
+}
+
 fn _assert_sync_and_send() {
     fn _assert_both<T: Send + Sync>() {}
     _assert_both::<JoinHandle<()>>();
@@ -658,6 +629,12 @@ mod tests {
         Builder::new().name("ada lovelace".to_string()).spawn(move|| {
             assert!(thread::current().name().unwrap() == "ada lovelace".to_string());
         }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_named_thread() {
+        let _ = Builder::new().name("ada l\0velace".to_string()).spawn(|| {});
     }
 
     #[test]
@@ -835,14 +812,14 @@ mod tests {
     fn test_park_timeout_unpark_before() {
         for _ in 0..10 {
             thread::current().unpark();
-            thread::park_timeout_ms(u32::MAX);
+            thread::park_timeout(Duration::from_millis(u32::MAX as u64));
         }
     }
 
     #[test]
     fn test_park_timeout_unpark_not_called() {
         for _ in 0..10 {
-            thread::park_timeout_ms(10);
+            thread::park_timeout(Duration::from_millis(10));
         }
     }
 
@@ -852,17 +829,17 @@ mod tests {
             let th = thread::current();
 
             let _guard = thread::spawn(move || {
-                super::sleep_ms(50);
+                super::sleep(Duration::from_millis(50));
                 th.unpark();
             });
 
-            thread::park_timeout_ms(u32::MAX);
+            thread::park_timeout(Duration::from_millis(u32::MAX as u64));
         }
     }
 
     #[test]
     fn sleep_ms_smoke() {
-        thread::sleep_ms(2);
+        thread::sleep(Duration::from_millis(2));
     }
 
     // NOTE: the corresponding test for stderr is in run-pass/thread-stderr, due

@@ -100,8 +100,9 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use ascii::*;
-use borrow::{Borrow, IntoCow, ToOwned, Cow};
+use borrow::{Borrow, ToOwned, Cow};
 use cmp;
+use error::Error;
 use fmt;
 use fs;
 use hash::{Hash, Hasher};
@@ -224,7 +225,7 @@ mod platform {
                     }
                     _ => (),
                 }
-            } else if path.len() > 1 && path[1] == b':' {
+            } else if path.get(1) == Some(& b':') {
                 // C:
                 let c = path[0];
                 if c.is_ascii() && (c as char).is_alphabetic() {
@@ -266,27 +267,33 @@ mod platform {
 pub enum Prefix<'a> {
     /// Prefix `\\?\`, together with the given component immediately following it.
     #[stable(feature = "rust1", since = "1.0.0")]
-    Verbatim(&'a OsStr),
+    Verbatim(#[stable(feature = "rust1", since = "1.0.0")] &'a OsStr),
 
     /// Prefix `\\?\UNC\`, with the "server" and "share" components following it.
     #[stable(feature = "rust1", since = "1.0.0")]
-    VerbatimUNC(&'a OsStr, &'a OsStr),
+    VerbatimUNC(
+        #[stable(feature = "rust1", since = "1.0.0")] &'a OsStr,
+        #[stable(feature = "rust1", since = "1.0.0")] &'a OsStr,
+    ),
 
     /// Prefix like `\\?\C:\`, for the given drive letter
     #[stable(feature = "rust1", since = "1.0.0")]
-    VerbatimDisk(u8),
+    VerbatimDisk(#[stable(feature = "rust1", since = "1.0.0")] u8),
 
     /// Prefix `\\.\`, together with the given component immediately following it.
     #[stable(feature = "rust1", since = "1.0.0")]
-    DeviceNS(&'a OsStr),
+    DeviceNS(#[stable(feature = "rust1", since = "1.0.0")] &'a OsStr),
 
     /// Prefix `\\server\share`, with the given "server" and "share" components.
     #[stable(feature = "rust1", since = "1.0.0")]
-    UNC(&'a OsStr, &'a OsStr),
+    UNC(
+        #[stable(feature = "rust1", since = "1.0.0")] &'a OsStr,
+        #[stable(feature = "rust1", since = "1.0.0")] &'a OsStr,
+    ),
 
     /// Prefix `C:` for the given disk drive.
     #[stable(feature = "rust1", since = "1.0.0")]
-    Disk(u8),
+    Disk(#[stable(feature = "rust1", since = "1.0.0")] u8),
 }
 
 impl<'a> Prefix<'a> {
@@ -385,11 +392,8 @@ fn iter_after<A, I, J>(mut iter: I, mut prefix: J) -> Option<I>
     loop {
         let mut iter_next = iter.clone();
         match (iter_next.next(), prefix.next()) {
-            (Some(x), Some(y)) => {
-                if x != y {
-                    return None;
-                }
-            }
+            (Some(ref x), Some(ref y)) if x == y => (),
+            (Some(_), Some(_)) => return None,
             (Some(_), None) => return Some(iter),
             (None, None) => return Some(iter),
             (None, Some(_)) => return None,
@@ -462,7 +466,7 @@ enum State {
     Done = 3,
 }
 
-/// A Windows path prefix, e.g. `C:` or `\server\share`.
+/// A Windows path prefix, e.g. `C:` or `\\server\share`.
 ///
 /// Does not occur on Unix.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -524,11 +528,13 @@ impl<'a> Hash for PrefixComponent<'a> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Component<'a> {
-    /// A Windows path prefix, e.g. `C:` or `\server\share`.
+    /// A Windows path prefix, e.g. `C:` or `\\server\share`.
     ///
     /// Does not occur on Unix.
     #[stable(feature = "rust1", since = "1.0.0")]
-    Prefix(PrefixComponent<'a>),
+    Prefix(
+        #[stable(feature = "rust1", since = "1.0.0")] PrefixComponent<'a>
+    ),
 
     /// The root directory component, appears after any prefix and before anything else
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -544,7 +550,7 @@ pub enum Component<'a> {
 
     /// A normal component, i.e. `a` and `b` in `a/b`
     #[stable(feature = "rust1", since = "1.0.0")]
-    Normal(&'a OsStr),
+    Normal(#[stable(feature = "rust1", since = "1.0.0")] &'a OsStr),
 }
 
 impl<'a> Component<'a> {
@@ -773,12 +779,6 @@ impl<'a> Components<'a> {
                 self.path = &self.path[..self.path.len() - size];
             }
         }
-    }
-
-    /// Examine the next component without consuming it.
-    #[unstable(feature = "path_components_peek", issue = "27727")]
-    pub fn peek(&self) -> Option<Component<'a>> {
-        self.clone().next()
     }
 }
 
@@ -1033,6 +1033,7 @@ impl PathBuf {
         self._push(path.as_ref())
     }
 
+    #[allow(deprecated)]
     fn _push(&mut self, path: &Path) {
         // in general, a separator is needed if the rightmost byte is not a separator
         let mut need_sep = self.as_mut_vec().last().map(|c| !is_sep_byte(*c)).unwrap_or(false);
@@ -1208,20 +1209,6 @@ impl Borrow<Path> for PathBuf {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
-impl IntoCow<'static, Path> for PathBuf {
-    fn into_cow(self) -> Cow<'static, Path> {
-        Cow::Owned(self)
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> IntoCow<'a, Path> for &'a Path {
-    fn into_cow(self) -> Cow<'a, Path> {
-        Cow::Borrowed(self)
-    }
-}
-
 #[stable(feature = "cow_from_path", since = "1.6.0")]
 impl<'a> From<&'a Path> for Cow<'a, Path> {
     #[inline]
@@ -1317,6 +1304,12 @@ impl Into<OsString> for PathBuf {
 pub struct Path {
     inner: OsStr,
 }
+
+/// An error returned from the `Path::strip_prefix` method indicating that the
+/// prefix was not found in `self`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[stable(since = "1.7.0", feature = "strip_prefix")]
+pub struct StripPrefixError(());
 
 impl Path {
     // The following (private!) function allows construction of a path from a u8
@@ -1437,6 +1430,7 @@ impl Path {
     /// assert!(!Path::new("foo.txt").is_absolute());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[allow(deprecated)]
     pub fn is_absolute(&self) -> bool {
         self.has_root() && (cfg!(unix) || self.prefix().is_some())
     }
@@ -1455,15 +1449,7 @@ impl Path {
         !self.is_absolute()
     }
 
-    /// Returns the *prefix* of a path, if any.
-    ///
-    /// Prefixes are relevant only for Windows paths, and consist of volumes
-    /// like `C:`, UNC prefixes like `\\server`, and others described in more
-    /// detail in `std::os::windows::PathExt`.
-    #[unstable(feature = "path_prefix",
-               reason = "uncertain whether to expose this convenience",
-               issue = "27722")]
-    pub fn prefix(&self) -> Option<Prefix> {
+    fn prefix(&self) -> Option<Prefix> {
         self.components().prefix
     }
 
@@ -1547,16 +1533,23 @@ impl Path {
 
     /// Returns a path that, when joined onto `base`, yields `self`.
     ///
+    /// # Errors
+    ///
     /// If `base` is not a prefix of `self` (i.e. `starts_with`
-    /// returns false), then `relative_from` returns `None`.
-    #[unstable(feature = "path_relative_from", reason = "see #23284",
-               issue = "23284")]
-    pub fn relative_from<'a, P: ?Sized + AsRef<Path>>(&'a self, base: &'a P) -> Option<&Path> {
-        self._relative_from(base.as_ref())
+    /// returns `false`), returns `Err`.
+    #[stable(since = "1.7.0", feature = "path_strip_prefix")]
+    pub fn strip_prefix<'a, P: ?Sized>(&'a self, base: &'a P)
+                                       -> Result<&'a Path, StripPrefixError>
+        where P: AsRef<Path>
+    {
+        self._strip_prefix(base.as_ref())
     }
 
-    fn _relative_from<'a>(&'a self, base: &'a Path) -> Option<&'a Path> {
-        iter_after(self.components(), base.components()).map(|c| c.as_path())
+    fn _strip_prefix<'a>(&'a self, base: &'a Path)
+                         -> Result<&'a Path, StripPrefixError> {
+        iter_after(self.components(), base.components())
+            .map(|c| c.as_path())
+            .ok_or(StripPrefixError(()))
     }
 
     /// Determines whether `base` is a prefix of `self`.
@@ -1783,76 +1776,98 @@ impl Path {
     }
 
 
-    /// Gets information on the file, directory, etc at this path.
+    /// Query the file system to get information about a file, directory, etc.
     ///
-    /// Consult the `fs::metadata` documentation for more info.
+    /// This function will traverse symbolic links to query information about the
+    /// destination file.
     ///
-    /// This call preserves identical runtime/error semantics with
-    /// `fs::metadata`.
+    /// This is an alias to `fs::metadata`.
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn metadata(&self) -> io::Result<fs::Metadata> {
         fs::metadata(self)
     }
 
-    /// Gets information on the file, directory, etc at this path.
+    /// Query the metadata about a file without following symlinks.
     ///
-    /// Consult the `fs::symlink_metadata` documentation for more info.
-    ///
-    /// This call preserves identical runtime/error semantics with
-    /// `fs::symlink_metadata`.
+    /// This is an alias to `fs::symlink_metadata`.
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn symlink_metadata(&self) -> io::Result<fs::Metadata> {
         fs::symlink_metadata(self)
     }
 
-    /// Returns the canonical form of a path, normalizing all components and
-    /// eliminate all symlinks.
+    /// Returns the canonical form of the path with all intermediate components
+    /// normalized and symbolic links resolved.
     ///
-    /// This call preserves identical runtime/error semantics with
-    /// `fs::canonicalize`.
+    /// This is an alias to `fs::canonicalize`.
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn canonicalize(&self) -> io::Result<PathBuf> {
         fs::canonicalize(self)
     }
 
-    /// Reads the symlink at this path.
+    /// Reads a symbolic link, returning the file that the link points to.
     ///
-    /// For more information see `fs::read_link`.
+    /// This is an alias to `fs::read_link`.
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn read_link(&self) -> io::Result<PathBuf> {
         fs::read_link(self)
     }
 
-    /// Reads the directory at this path.
+    /// Returns an iterator over the entries within a directory.
     ///
-    /// For more information see `fs::read_dir`.
+    /// The iterator will yield instances of `io::Result<DirEntry>`. New errors may
+    /// be encountered after an iterator is initially constructed.
+    ///
+    /// This is an alias to `fs::read_dir`.
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn read_dir(&self) -> io::Result<fs::ReadDir> {
         fs::read_dir(self)
     }
 
-    /// Boolean value indicator whether the underlying file exists on the local
-    /// filesystem. Returns false in exactly the cases where `fs::metadata`
-    /// fails.
+    /// Returns whether the path points at an existing entity.
+    ///
+    /// This function will traverse symbolic links to query information about the
+    /// destination file. In case of broken symbolic links this will return `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// assert_eq!(Path::new("does_not_exist.txt").exists(), false);
+    /// ```
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn exists(&self) -> bool {
         fs::metadata(self).is_ok()
     }
 
-    /// Whether the underlying implementation (be it a file path, or something
-    /// else) points at a "regular file" on the FS. Will return false for paths
-    /// to non-existent locations or directories or other non-regular files
-    /// (named pipes, etc). Follows links when making this determination.
+    /// Returns whether the path is pointing at a regular file.
+    ///
+    /// This function will traverse symbolic links to query information about the
+    /// destination file. In case of broken symbolic links this will return `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// assert_eq!(Path::new("./is_a_directory/").is_file(), false);
+    /// assert_eq!(Path::new("a_file.txt").is_file(), true);
+    /// ```
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn is_file(&self) -> bool {
         fs::metadata(self).map(|m| m.is_file()).unwrap_or(false)
     }
 
-    /// Whether the underlying implementation (be it a file path, or something
-    /// else) is pointing at a directory in the underlying FS. Will return
-    /// false for paths to non-existent locations or if the item is not a
-    /// directory (eg files, named pipes, etc). Follows links when making this
-    /// determination.
+    /// Returns whether the path is pointing at a directory.
+    ///
+    /// This function will traverse symbolic links to query information about the
+    /// destination file. In case of broken symbolic links this will return `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// assert_eq!(Path::new("./is_a_directory/").is_dir(), true);
+    /// assert_eq!(Path::new("a_file.txt").is_dir(), false);
+    /// ```
     #[stable(feature = "path_ext", since = "1.5.0")]
     pub fn is_dir(&self) -> bool {
         fs::metadata(self).map(|m| m.is_dir()).unwrap_or(false)
@@ -1940,6 +1955,13 @@ impl AsRef<Path> for OsStr {
     }
 }
 
+#[stable(feature = "cow_os_str_as_ref_path", since = "1.8.0")]
+impl<'a> AsRef<Path> for Cow<'a, OsStr> {
+    fn as_ref(&self) -> &Path {
+        Path::new(self)
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl AsRef<Path> for OsString {
     fn as_ref(&self) -> &Path {
@@ -1982,7 +2004,7 @@ impl<'a> IntoIterator for &'a Path {
     fn into_iter(self) -> Iter<'a> { self.iter() }
 }
 
-macro_rules! impl_eq {
+macro_rules! impl_cmp {
     ($lhs:ty, $rhs: ty) => {
         #[stable(feature = "partialeq_path", since = "1.6.0")]
         impl<'a, 'b> PartialEq<$rhs> for $lhs {
@@ -1996,14 +2018,88 @@ macro_rules! impl_eq {
             fn eq(&self, other: &$lhs) -> bool { <Path as PartialEq>::eq(self, other) }
         }
 
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialOrd<$rhs> for $lhs {
+            #[inline]
+            fn partial_cmp(&self, other: &$rhs) -> Option<cmp::Ordering> {
+                <Path as PartialOrd>::partial_cmp(self, other)
+            }
+        }
+
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialOrd<$lhs> for $rhs {
+            #[inline]
+            fn partial_cmp(&self, other: &$lhs) -> Option<cmp::Ordering> {
+                <Path as PartialOrd>::partial_cmp(self, other)
+            }
+        }
     }
 }
 
-impl_eq!(PathBuf, Path);
-impl_eq!(PathBuf, &'a Path);
-impl_eq!(Cow<'a, Path>, Path);
-impl_eq!(Cow<'a, Path>, &'b Path);
-impl_eq!(Cow<'a, Path>, PathBuf);
+impl_cmp!(PathBuf, Path);
+impl_cmp!(PathBuf, &'a Path);
+impl_cmp!(Cow<'a, Path>, Path);
+impl_cmp!(Cow<'a, Path>, &'b Path);
+impl_cmp!(Cow<'a, Path>, PathBuf);
+
+macro_rules! impl_cmp_os_str {
+    ($lhs:ty, $rhs: ty) => {
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialEq<$rhs> for $lhs {
+            #[inline]
+            fn eq(&self, other: &$rhs) -> bool { <Path as PartialEq>::eq(self, other.as_ref()) }
+        }
+
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialEq<$lhs> for $rhs {
+            #[inline]
+            fn eq(&self, other: &$lhs) -> bool { <Path as PartialEq>::eq(self.as_ref(), other) }
+        }
+
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialOrd<$rhs> for $lhs {
+            #[inline]
+            fn partial_cmp(&self, other: &$rhs) -> Option<cmp::Ordering> {
+                <Path as PartialOrd>::partial_cmp(self, other.as_ref())
+            }
+        }
+
+        #[stable(feature = "cmp_path", since = "1.8.0")]
+        impl<'a, 'b> PartialOrd<$lhs> for $rhs {
+            #[inline]
+            fn partial_cmp(&self, other: &$lhs) -> Option<cmp::Ordering> {
+                <Path as PartialOrd>::partial_cmp(self.as_ref(), other)
+            }
+        }
+    }
+}
+
+impl_cmp_os_str!(PathBuf, OsStr);
+impl_cmp_os_str!(PathBuf, &'a OsStr);
+impl_cmp_os_str!(PathBuf, Cow<'a, OsStr>);
+impl_cmp_os_str!(PathBuf, OsString);
+impl_cmp_os_str!(Path, OsStr);
+impl_cmp_os_str!(Path, &'a OsStr);
+impl_cmp_os_str!(Path, Cow<'a, OsStr>);
+impl_cmp_os_str!(Path, OsString);
+impl_cmp_os_str!(&'a Path, OsStr);
+impl_cmp_os_str!(&'a Path, Cow<'b, OsStr>);
+impl_cmp_os_str!(&'a Path, OsString);
+impl_cmp_os_str!(Cow<'a, Path>, OsStr);
+impl_cmp_os_str!(Cow<'a, Path>, &'b OsStr);
+impl_cmp_os_str!(Cow<'a, Path>, OsString);
+
+#[stable(since = "1.7.0", feature = "strip_prefix")]
+impl fmt::Display for StripPrefixError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.description().fmt(f)
+    }
+}
+
+#[stable(since = "1.7.0", feature = "strip_prefix")]
+impl Error for StripPrefixError {
+    fn description(&self) -> &str { "prefix not found" }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2093,26 +2189,6 @@ mod tests {
             }
         );
     );
-
-    #[test]
-    fn into_cow() {
-        use borrow::{Cow, IntoCow};
-
-        let static_path = Path::new("/home/foo");
-        let static_cow_path: Cow<'static, Path> = static_path.into_cow();
-        let pathbuf = PathBuf::from("/home/foo");
-
-        {
-            let path: &Path = &pathbuf;
-            let borrowed_cow_path: Cow<Path> = path.into_cow();
-
-            assert_eq!(static_cow_path, borrowed_cow_path);
-        }
-
-        let owned_cow_path: Cow<'static, Path> = pathbuf.into_cow();
-
-        assert_eq!(static_cow_path, owned_cow_path);
-    }
 
     #[test]
     fn into() {
@@ -3273,11 +3349,13 @@ mod tests {
                          "{:?}.ends_with({:?}), expected {:?}, got {:?}", $path1, $path2,
                          $ends_with, ends_with);
 
-                 let relative_from = path1.relative_from(path2).map(|p| p.to_str().unwrap());
+                 let relative_from = path1.strip_prefix(path2)
+                                          .map(|p| p.to_str().unwrap())
+                                          .ok();
                  let exp: Option<&str> = $relative_from;
                  assert!(relative_from == exp,
-                         "{:?}.relative_from({:?}), expected {:?}, got {:?}", $path1, $path2,
-                         exp, relative_from);
+                         "{:?}.strip_prefix({:?}), expected {:?}, got {:?}",
+                         $path1, $path2, exp, relative_from);
             });
         );
 

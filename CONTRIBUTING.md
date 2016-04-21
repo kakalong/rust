@@ -6,6 +6,7 @@ links to the major sections:
 
 * [Feature Requests](#feature-requests)
 * [Bug Reports](#bug-reports)
+* [The Build System](#the-build-system)
 * [Pull Requests](#pull-requests)
 * [Writing Documentation](#writing-documentation)
 * [Issue Triage](#issue-triage)
@@ -70,12 +71,77 @@ which includes important information about what platform you're on, what
 version of Rust you're using, etc.
 
 Sometimes, a backtrace is helpful, and so including that is nice. To get
-a backtrace, set the `RUST_BACKTRACE` environment variable. The easiest way
+a backtrace, set the `RUST_BACKTRACE` environment variable to a value
+other than `0`. The easiest way
 to do this is to invoke `rustc` like this:
 
 ```bash
 $ RUST_BACKTRACE=1 rustc ...
 ```
+
+## The Build System
+
+Rust's build system allows you to bootstrap the compiler, run tests &
+benchmarks, generate documentation, install a fresh build of Rust, and more.
+It's your best friend when working on Rust, allowing you to compile & test
+your contributions before submission.
+
+All the configuration for the build system lives in [the `mk` directory][mkdir]
+in the project root. It can be hard to follow in places, as it uses some
+advanced Make features which make for some challenging reading. If you have
+questions on the build system internals, try asking in
+[`#rust-internals`][pound-rust-internals].
+
+[mkdir]: https://github.com/rust-lang/rust/tree/master/mk/
+
+### Configuration
+
+Before you can start building the compiler you need to configure the build for
+your system. In most cases, that will just mean using the defaults provided
+for Rust. Configuring involves invoking the `configure` script in the project
+root.
+
+```
+./configure
+```
+
+There are large number of options accepted by this script to alter the
+configuration used later in the build process. Some options to note:
+
+- `--enable-debug` - Build a debug version of the compiler (disables optimizations)
+- `--enable-optimize` - Enable optimizations (can be used with `--enable-debug`
+    to make a debug build with optimizations)
+- `--disable-valgrind-rpass` - Don't run tests with valgrind
+- `--enable-clang` - Prefer clang to gcc for building dependencies (e.g., LLVM)
+- `--enable-ccache` - Invoke clang/gcc with ccache to re-use object files between builds
+- `--enable-compiler-docs` - Build compiler documentation
+
+To see a full list of options, run `./configure --help`.
+
+### Useful Targets
+
+Some common make targets are:
+
+- `make rustc-stage1` - build up to (and including) the first stage. For most
+  cases we don't need to build the stage2 compiler, so we can save time by not
+  building it. The stage1 compiler is a fully functioning compiler and
+  (probably) will be enough to determine if your change works as expected.
+- `make check` - build the full compiler & run all tests (takes a while). This
+  is what gets run by the continuous integration system against your pull
+  request. You should run this before submitting to make sure your tests pass
+  & everything builds in the correct manner.
+- `make check-stage1-std NO_REBUILD=1` - test the standard library without
+  rebuilding the entire compiler
+- `make check TESTNAME=<substring-of-test-name>` - Run a matching set of tests.
+  - `TESTNAME` should be a substring of the tests to match against e.g. it could
+    be the fully qualified test name, or just a part of it.
+    `TESTNAME=collections::hash::map::test_map::test_capacity_not_less_than_len`
+    or `TESTNAME=test_capacity_not_less_than_len`.
+- `make check-stage1-rpass TESTNAME=<substring-of-test-name>` - Run a single
+  rpass test with the stage1 compiler (this will be quicker than running the
+  command above as we only build the stage1 compiler, not the entire thing).
+  You can also leave off the `-rpass` to run all stage1 test types.
+- `make check-stage1-coretest` - Run stage1 tests in `libcore`.
 
 ## Pull Requests
 
@@ -174,7 +240,7 @@ labels to triage issues:
 * Yellow, **A**-prefixed labels state which **area** of the project an issue
   relates to.
 
-* Magenta, **B**-prefixed labels identify bugs which **belong** elsewhere.
+* Magenta, **B**-prefixed labels identify bugs which are **blockers**.
 
 * Green, **E**-prefixed labels explain the level of **experience** necessary
   to fix the issue.
@@ -238,10 +304,10 @@ are:
 * Don't be afraid to ask! The Rust community is friendly and helpful.
 
 [gdfrustc]: http://manishearth.github.io/rust-internals-docs/rustc/
-[gsearchdocs]: https://www.google.de/search?q=site:doc.rust-lang.org+your+query+here
+[gsearchdocs]: https://www.google.com/search?q=site:doc.rust-lang.org+your+query+here
 [rif]: http://internals.rust-lang.org
 [rr]: https://doc.rust-lang.org/book/README.html
-[tlgba]: http://tomlee.co/2014/04/03/a-more-detailed-tour-of-the-rust-compiler/
+[tlgba]: http://tomlee.co/2014/04/a-more-detailed-tour-of-the-rust-compiler/
 [ro]: http://www.rustaceans.org/
 [rctd]: ./COMPILER_TESTS.md
 [cheatsheet]: http://buildbot.rust-lang.org/homu/

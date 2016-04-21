@@ -14,23 +14,20 @@
 //! [def]: https://en.wikipedia.org/wiki/DEFLATE
 //! [mz]: https://code.google.com/p/miniz/
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "flate"]
 #![unstable(feature = "rustc_private", issue = "27812")]
-#![cfg_attr(stage0, staged_api)]
 #![crate_type = "rlib"]
 #![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
        test(attr(deny(warnings))))]
+#![cfg_attr(not(stage0), deny(warnings))]
 
 #![feature(libc)]
 #![feature(staged_api)]
 #![feature(unique)]
-#![cfg_attr(test, feature(rustc_private, rand, vec_push_all))]
-#![cfg_attr(stage0, allow(improper_ctypes))]
+#![cfg_attr(test, feature(rustc_private, rand))]
 
 #[cfg(test)]
 #[macro_use]
@@ -82,7 +79,10 @@ impl Drop for Bytes {
 }
 
 #[link(name = "miniz", kind = "static")]
-extern "C" {
+#[cfg(not(cargobuild))]
+extern {}
+
+extern {
     /// Raw miniz compression function.
     fn tdefl_compress_mem_to_heap(psrc_buf: *const c_void,
                                   src_buf_len: size_t,
@@ -173,7 +173,7 @@ mod tests {
         for _ in 0..20 {
             let mut input = vec![];
             for _ in 0..2000 {
-                input.push_all(r.choose(&words).unwrap());
+                input.extend_from_slice(r.choose(&words).unwrap());
             }
             debug!("de/inflate of {} bytes of random word-sequences",
                    input.len());

@@ -14,7 +14,7 @@
 struct S(i32);
 
 const CONSTANT: S = S(0);
-//~^ ERROR: constant evaluation error: non-constant path in constant expression [E0080]
+//~^ ERROR: unimplemented constant expression: tuple struct constructors [E0080]
 
 enum E {
     V = CONSTANT,

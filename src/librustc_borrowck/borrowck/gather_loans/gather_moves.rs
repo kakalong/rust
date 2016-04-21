@@ -18,12 +18,12 @@ use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::mem_categorization::InteriorOffsetKind as Kind;
-use rustc::middle::ty;
+use rustc::ty;
 
 use std::rc::Rc;
 use syntax::ast;
 use syntax::codemap::Span;
-use rustc_front::hir;
+use rustc::hir::{self, PatKind};
 
 struct GatherMoveInfo<'tcx> {
     id: ast::NodeId,
@@ -78,8 +78,8 @@ pub fn gather_match_variant<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                 LpDowncast(ref base_lp, _) =>
                     move_data.add_variant_match(
                         tcx, lp.clone(), move_pat.id, base_lp.clone(), mode),
-                _ => panic!("should only call gather_match_variant \
-                             for cat_downcast cmt"),
+                _ => bug!("should only call gather_match_variant \
+                           for cat_downcast cmt"),
             }
         }
         None => {
@@ -98,7 +98,7 @@ pub fn gather_move_from_pat<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                       move_pat: &hir::Pat,
                                       cmt: mc::cmt<'tcx>) {
     let pat_span_path_opt = match move_pat.node {
-        hir::PatIdent(_, ref path1, _) => {
+        PatKind::Ident(_, ref path1, _) => {
             Some(MoveSpanAndPath{span: move_pat.span,
                                  name: path1.node.name})
         },

@@ -10,38 +10,37 @@
 
 //! # Standalone Tests for the Inference Module
 
-use diagnostic;
-use diagnostic::Emitter;
 use driver;
+use rustc::dep_graph::DepGraph;
 use rustc_lint;
 use rustc_resolve as resolve;
-use rustc_typeck::middle::lang_items;
-use rustc_typeck::middle::free_region::FreeRegionMap;
-use rustc_typeck::middle::region::{self, CodeExtent};
-use rustc_typeck::middle::region::CodeExtentData;
-use rustc_typeck::middle::resolve_lifetime;
-use rustc_typeck::middle::stability;
-use rustc_typeck::middle::subst;
-use rustc_typeck::middle::subst::Subst;
-use rustc_typeck::middle::ty::{self, Ty, RegionEscape};
-use rustc_typeck::middle::ty::relate::TypeRelation;
-use rustc_typeck::middle::infer::{self, TypeOrigin};
-use rustc_typeck::middle::infer::lub::Lub;
-use rustc_typeck::middle::infer::glb::Glb;
-use rustc_typeck::middle::infer::sub::Sub;
+use rustc::middle::lang_items;
+use rustc::middle::free_region::FreeRegionMap;
+use rustc::middle::region::{self, CodeExtent};
+use rustc::middle::region::CodeExtentData;
+use rustc::middle::resolve_lifetime;
+use rustc::middle::stability;
+use rustc::ty::subst;
+use rustc::ty::subst::Subst;
+use rustc::traits::ProjectionMode;
+use rustc::ty::{self, Ty, TyCtxt, TypeFoldable};
+use rustc::ty::relate::TypeRelation;
+use rustc::infer::{self, InferOk, InferResult, TypeOrigin};
 use rustc_metadata::cstore::CStore;
-use rustc::front::map as hir_map;
+use rustc::hir::map as hir_map;
 use rustc::session::{self, config};
 use std::rc::Rc;
-use syntax::{abi, ast};
-use syntax::codemap;
-use syntax::codemap::{Span, CodeMap, DUMMY_SP};
-use syntax::diagnostic::{Level, RenderSpan, Bug, Fatal, Error, Warning, Note, Help};
+use syntax::ast;
+use syntax::abi::Abi;
+use syntax::codemap::{MultiSpan, CodeMap, DUMMY_SP};
+use syntax::errors;
+use syntax::errors::emitter::Emitter;
+use syntax::errors::{Level, RenderSpan};
 use syntax::parse::token;
 use syntax::feature_gate::UnstableFeatures;
 
-use rustc_front::lowering::{lower_crate, LoweringContext};
-use rustc_front::hir;
+use rustc::hir::lowering::{lower_crate, LoweringContext};
+use rustc::hir;
 
 struct Env<'a, 'tcx: 'a> {
     infcx: &'a infer::InferCtxt<'a, 'tcx>,
@@ -60,8 +59,8 @@ struct ExpectErrorEmitter {
 
 fn remove_message(e: &mut ExpectErrorEmitter, msg: &str, lvl: Level) {
     match lvl {
-        Bug | Fatal | Error => {}
-        Warning | Note | Help => {
+        Level::Bug | Level::Fatal | Level::Error => {}
+        _ => {
             return;
         }
     }
@@ -79,14 +78,14 @@ fn remove_message(e: &mut ExpectErrorEmitter, msg: &str, lvl: Level) {
 
 impl Emitter for ExpectErrorEmitter {
     fn emit(&mut self,
-            _cmsp: Option<(&codemap::CodeMap, Span)>,
+            _sp: Option<&MultiSpan>,
             msg: &str,
             _: Option<&str>,
             lvl: Level) {
         remove_message(self, msg, lvl);
     }
 
-    fn custom_emit(&mut self, _cm: &codemap::CodeMap, _sp: RenderSpan, msg: &str, lvl: Level) {
+    fn custom_emit(&mut self, _sp: &RenderSpan, msg: &str, lvl: Level) {
         remove_message(self, msg, lvl);
     }
 }
@@ -105,44 +104,51 @@ fn test_env<F>(source_string: &str,
     let mut options = config::basic_options();
     options.debugging_opts.verbose = true;
     options.unstable_features = UnstableFeatures::Allow;
-    let codemap = CodeMap::new();
-    let diagnostic_handler = diagnostic::Handler::with_emitter(true, emitter);
-    let span_diagnostic_handler = diagnostic::SpanHandler::new(diagnostic_handler, codemap);
+    let diagnostic_handler = errors::Handler::with_emitter(true, false, emitter);
 
     let cstore = Rc::new(CStore::new(token::get_ident_interner()));
-    let sess = session::build_session_(options, None, span_diagnostic_handler,
-                                       cstore.clone());
+    let sess = session::build_session_(options, None, diagnostic_handler,
+                                       Rc::new(CodeMap::new()), cstore.clone());
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
     let krate_config = Vec::new();
-    let input = config::Input::Str(source_string.to_string());
-    let krate = driver::phase_1_parse_input(&sess, krate_config, &input);
+    let input = config::Input::Str {
+        name: driver::anon_src(),
+        input: source_string.to_string(),
+    };
+    let krate = driver::phase_1_parse_input(&sess, krate_config, &input).unwrap();
     let krate = driver::phase_2_configure_and_expand(&sess, &cstore, krate, "test", None)
                     .expect("phase 2 aborted");
 
     let krate = driver::assign_node_ids(&sess, krate);
     let lcx = LoweringContext::new(&sess, Some(&krate));
-    let mut hir_forest = hir_map::Forest::new(lower_crate(&lcx, &krate));
+    let dep_graph = DepGraph::new(false);
+    let _ignore = dep_graph.in_ignore();
+    let mut hir_forest = hir_map::Forest::new(lower_crate(&lcx, &krate), dep_graph.clone());
     let arenas = ty::CtxtArenas::new();
     let ast_map = driver::make_map(&sess, &mut hir_forest);
-    let krate = ast_map.krate();
 
     // run just enough stuff to build a tcx:
     let lang_items = lang_items::collect_language_items(&sess, &ast_map);
     let resolve::CrateMap { def_map, freevars, .. } =
         resolve::resolve_crate(&sess, &ast_map, resolve::MakeGlobMap::No);
-    let named_region_map = resolve_lifetime::krate(&sess, krate, &def_map.borrow());
-    let region_map = region::resolve_crate(&sess, krate);
-    ty::ctxt::create_and_enter(&sess,
+    let named_region_map = resolve_lifetime::krate(&sess, &ast_map, &def_map.borrow());
+    let region_map = region::resolve_crate(&sess, &ast_map);
+    let index = stability::Index::new(&ast_map);
+    TyCtxt::create_and_enter(&sess,
                                &arenas,
                                def_map,
-                               named_region_map,
+                               named_region_map.unwrap(),
                                ast_map,
                                freevars,
                                region_map,
                                lang_items,
-                               stability::Index::new(krate),
+                               index,
+                               "test_crate",
                                |tcx| {
-                                   let infcx = infer::new_infer_ctxt(tcx, &tcx.tables, None, false);
+                                   let infcx = infer::new_infer_ctxt(tcx,
+                                                                     &tcx.tables,
+                                                                     None,
+                                                                     ProjectionMode::AnyFinal);
                                    body(Env { infcx: &infcx });
                                    let free_regions = FreeRegionMap::new();
                                    infcx.resolve_regions_and_report_errors(&free_regions,
@@ -152,7 +158,7 @@ fn test_env<F>(source_string: &str,
 }
 
 impl<'a, 'tcx> Env<'a, 'tcx> {
-    pub fn tcx(&self) -> &ty::ctxt<'tcx> {
+    pub fn tcx(&self) -> &TyCtxt<'tcx> {
         self.infcx.tcx
     }
 
@@ -260,16 +266,15 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
 
     pub fn t_fn(&self, input_tys: &[Ty<'tcx>], output_ty: Ty<'tcx>) -> Ty<'tcx> {
         let input_args = input_tys.iter().cloned().collect();
-        self.infcx.tcx.mk_fn(None,
-                             self.infcx.tcx.mk_bare_fn(ty::BareFnTy {
-                                 unsafety: hir::Unsafety::Normal,
-                                 abi: abi::Rust,
-                                 sig: ty::Binder(ty::FnSig {
-                                     inputs: input_args,
-                                     output: ty::FnConverging(output_ty),
-                                     variadic: false,
-                                 }),
-                             }))
+        self.infcx.tcx.mk_fn_ptr(ty::BareFnTy {
+            unsafety: hir::Unsafety::Normal,
+            abi: Abi::Rust,
+            sig: ty::Binder(ty::FnSig {
+                inputs: input_args,
+                output: ty::FnConverging(output_ty),
+                variadic: false,
+            }),
+        })
     }
 
     pub fn t_nil(&self) -> Ty<'tcx> {
@@ -292,7 +297,6 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
                           -> ty::Region {
         let name = token::intern(name);
         ty::ReEarlyBound(ty::EarlyBoundRegion {
-            def_id: self.infcx.tcx.map.local_def_id(ast::DUMMY_NODE_ID),
             space: space,
             index: index,
             name: name,
@@ -351,33 +355,29 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
         infer::TypeTrace::dummy(self.tcx())
     }
 
-    pub fn sub(&self) -> Sub<'a, 'tcx> {
+    pub fn sub(&self, t1: &Ty<'tcx>, t2: &Ty<'tcx>) -> InferResult<'tcx, Ty<'tcx>> {
         let trace = self.dummy_type_trace();
-        self.infcx.sub(true, trace)
+        self.infcx.sub(true, trace, t1, t2)
     }
 
-    pub fn lub(&self) -> Lub<'a, 'tcx> {
+    pub fn lub(&self, t1: &Ty<'tcx>, t2: &Ty<'tcx>) -> InferResult<'tcx, Ty<'tcx>> {
         let trace = self.dummy_type_trace();
-        self.infcx.lub(true, trace)
+        self.infcx.lub(true, trace, t1, t2)
     }
 
-    pub fn glb(&self) -> Glb<'a, 'tcx> {
+    pub fn glb(&self, t1: &Ty<'tcx>, t2: &Ty<'tcx>) -> InferResult<'tcx, Ty<'tcx>> {
         let trace = self.dummy_type_trace();
-        self.infcx.glb(true, trace)
-    }
-
-    pub fn make_lub_ty(&self, t1: Ty<'tcx>, t2: Ty<'tcx>) -> Ty<'tcx> {
-        match self.lub().relate(&t1, &t2) {
-            Ok(t) => t,
-            Err(ref e) => panic!("unexpected error computing LUB: {}", e),
-        }
+        self.infcx.glb(true, trace, t1, t2)
     }
 
     /// Checks that `t1 <: t2` is true (this may register additional
     /// region checks).
     pub fn check_sub(&self, t1: Ty<'tcx>, t2: Ty<'tcx>) {
-        match self.sub().relate(&t1, &t2) {
-            Ok(_) => {}
+        match self.sub(&t1, &t2) {
+            Ok(InferOk { obligations, .. }) => {
+                // FIXME(#32730) once obligations are being propagated, assert the right thing.
+                assert!(obligations.is_empty());
+            }
             Err(ref e) => {
                 panic!("unexpected error computing sub({:?},{:?}): {}", t1, t2, e);
             }
@@ -387,7 +387,7 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
     /// Checks that `t1 <: t2` is false (this may register additional
     /// region checks).
     pub fn check_not_sub(&self, t1: Ty<'tcx>, t2: Ty<'tcx>) {
-        match self.sub().relate(&t1, &t2) {
+        match self.sub(&t1, &t2) {
             Err(_) => {}
             Ok(_) => {
                 panic!("unexpected success computing sub({:?},{:?})", t1, t2);
@@ -397,8 +397,11 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
 
     /// Checks that `LUB(t1,t2) == t_lub`
     pub fn check_lub(&self, t1: Ty<'tcx>, t2: Ty<'tcx>, t_lub: Ty<'tcx>) {
-        match self.lub().relate(&t1, &t2) {
-            Ok(t) => {
+        match self.lub(&t1, &t2) {
+            Ok(InferOk { obligations, value: t }) => {
+                // FIXME(#32730) once obligations are being propagated, assert the right thing.
+                assert!(obligations.is_empty());
+
                 self.assert_eq(t, t_lub);
             }
             Err(ref e) => {
@@ -410,11 +413,14 @@ impl<'a, 'tcx> Env<'a, 'tcx> {
     /// Checks that `GLB(t1,t2) == t_glb`
     pub fn check_glb(&self, t1: Ty<'tcx>, t2: Ty<'tcx>, t_glb: Ty<'tcx>) {
         debug!("check_glb(t1={}, t2={}, t_glb={})", t1, t2, t_glb);
-        match self.glb().relate(&t1, &t2) {
+        match self.glb(&t1, &t2) {
             Err(e) => {
                 panic!("unexpected error computing LUB: {:?}", e)
             }
-            Ok(t) => {
+            Ok(InferOk { obligations, value: t }) => {
+                // FIXME(#32730) once obligations are being propagated, assert the right thing.
+                assert!(obligations.is_empty());
+
                 self.assert_eq(t, t_glb);
 
                 // sanity check for good measure:

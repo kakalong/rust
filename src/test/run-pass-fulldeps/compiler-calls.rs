@@ -23,7 +23,7 @@ extern crate syntax;
 use rustc::session::Session;
 use rustc::session::config::{self, Input};
 use rustc_driver::{driver, CompilerCalls, Compilation};
-use syntax::{diagnostics, diagnostic};
+use syntax::{diagnostics, errors};
 
 use std::path::PathBuf;
 
@@ -34,8 +34,9 @@ struct TestCalls {
 impl<'a> CompilerCalls<'a> for TestCalls {
     fn early_callback(&mut self,
                       _: &getopts::Matches,
+                      _: &config::Options,
                       _: &diagnostics::registry::Registry,
-                      _: diagnostic::ColorConfig)
+                      _: config::ErrorOutputType)
                       -> Compilation {
         self.count *= 2;
         Compilation::Continue

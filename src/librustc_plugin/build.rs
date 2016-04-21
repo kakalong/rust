@@ -13,9 +13,11 @@
 use syntax::ast;
 use syntax::attr;
 use syntax::codemap::Span;
-use syntax::diagnostic;
-use rustc_front::intravisit::Visitor;
-use rustc_front::hir;
+use syntax::errors;
+use rustc::dep_graph::DepNode;
+use rustc::hir::map::Map;
+use rustc::hir::intravisit::Visitor;
+use rustc::hir;
 
 struct RegistrarFinder {
     registrars: Vec<(ast::NodeId, Span)> ,
@@ -33,9 +35,12 @@ impl<'v> Visitor<'v> for RegistrarFinder {
 }
 
 /// Find the function marked with `#[plugin_registrar]`, if any.
-pub fn find_plugin_registrar(diagnostic: &diagnostic::SpanHandler,
-                             krate: &hir::Crate)
+pub fn find_plugin_registrar(diagnostic: &errors::Handler,
+                             hir_map: &Map)
                              -> Option<ast::NodeId> {
+    let _task = hir_map.dep_graph.in_task(DepNode::PluginRegistrar);
+    let krate = hir_map.krate();
+
     let mut finder = RegistrarFinder { registrars: Vec::new() };
     krate.visit_all_items(&mut finder);
 
@@ -46,11 +51,12 @@ pub fn find_plugin_registrar(diagnostic: &diagnostic::SpanHandler,
             Some(node_id)
         },
         _ => {
-            diagnostic.handler().err("multiple plugin registration functions found");
+            let mut e = diagnostic.struct_err("multiple plugin registration functions found");
             for &(_, span) in &finder.registrars {
-                diagnostic.span_note(span, "one is here");
+                e.span_note(span, "one is here");
             }
-            diagnostic.handler().abort_if_errors();
+            e.emit();
+            diagnostic.abort_if_errors();
             unreachable!();
         }
     }

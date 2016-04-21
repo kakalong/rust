@@ -22,7 +22,7 @@ use session::Session;
 use session::config::CrateTypeDylib;
 use session::config;
 use syntax::ast;
-use trans::CrateTranslation;
+use CrateTranslation;
 
 /// Linker abstraction used by back::link to build up the command to invoke a
 /// linker.
@@ -131,6 +131,9 @@ impl<'a> Linker for GnuLinker<'a> {
         // insert it here.
         if self.sess.target.target.options.is_like_osx {
             self.cmd.arg("-Wl,-dead_strip");
+        } else if self.sess.target.target.options.is_like_solaris {
+            self.cmd.arg("-Wl,-z");
+            self.cmd.arg("-Wl,ignore");
 
         // If we're building a dylib, we don't use --gc-sections because LLVM
         // has already done the best it can do, and we also don't want to
@@ -147,8 +150,8 @@ impl<'a> Linker for GnuLinker<'a> {
 
         // GNU-style linkers support optimization with -O. GNU ld doesn't
         // need a numeric argument, but other linkers do.
-        if self.sess.opts.optimize == config::Default ||
-           self.sess.opts.optimize == config::Aggressive {
+        if self.sess.opts.optimize == config::OptLevel::Default ||
+           self.sess.opts.optimize == config::OptLevel::Aggressive {
             self.cmd.arg("-Wl,-O1");
         }
     }
@@ -210,7 +213,14 @@ impl<'a> Linker for MsvcLinker<'a> {
     fn link_rlib(&mut self, lib: &Path) { self.cmd.arg(lib); }
     fn add_object(&mut self, path: &Path) { self.cmd.arg(path); }
     fn args(&mut self, args: &[String]) { self.cmd.args(args); }
-    fn build_dylib(&mut self, _out_filename: &Path) { self.cmd.arg("/DLL"); }
+
+    fn build_dylib(&mut self, out_filename: &Path) {
+        self.cmd.arg("/DLL");
+        let mut arg: OsString = "/IMPLIB:".into();
+        arg.push(out_filename.with_extension("dll.lib"));
+        self.cmd.arg(arg);
+    }
+
     fn gc_sections(&mut self, _is_dylib: bool) { self.cmd.arg("/OPT:REF,ICF"); }
 
     fn link_dylib(&mut self, lib: &str) {
@@ -222,7 +232,7 @@ impl<'a> Linker for MsvcLinker<'a> {
         // `foo.lib` file if the dll doesn't actually export any symbols, so we
         // check to see if the file is there and just omit linking to it if it's
         // not present.
-        let name = format!("{}.lib", lib);
+        let name = format!("{}.dll.lib", lib);
         if fs::metadata(&path.join(&name)).is_ok() {
             self.cmd.arg(name);
         }
@@ -261,10 +271,10 @@ impl<'a> Linker for MsvcLinker<'a> {
     }
 
     fn framework_path(&mut self, _path: &Path) {
-        panic!("frameworks are not supported on windows")
+        bug!("frameworks are not supported on windows")
     }
     fn link_framework(&mut self, _framework: &str) {
-        panic!("frameworks are not supported on windows")
+        bug!("frameworks are not supported on windows")
     }
 
     fn link_whole_staticlib(&mut self, lib: &str, _search_path: &[PathBuf]) {
@@ -317,16 +327,16 @@ impl<'a> Linker for MsvcLinker<'a> {
                       tmpdir: &Path) {
         let path = tmpdir.join("lib.def");
         let res = (|| -> io::Result<()> {
-            let mut f = BufWriter::new(try!(File::create(&path)));
+            let mut f = BufWriter::new(File::create(&path)?);
 
             // Start off with the standard module name header and then go
             // straight to exports.
-            try!(writeln!(f, "LIBRARY"));
-            try!(writeln!(f, "EXPORTS"));
+            writeln!(f, "LIBRARY")?;
+            writeln!(f, "EXPORTS")?;
 
             // Write out all our local symbols
             for sym in trans.reachable.iter() {
-                try!(writeln!(f, "  {}", sym));
+                writeln!(f, "  {}", sym)?;
             }
 
             // Take a look at how all upstream crates are linked into this
@@ -347,8 +357,9 @@ impl<'a> Linker for MsvcLinker<'a> {
                 cstore.item_symbol(did)
             });
             for symbol in symbols {
-                try!(writeln!(f, "  {}", symbol));
+                writeln!(f, "  {}", symbol)?;
             }
+
             Ok(())
         })();
         if let Err(e) = res {

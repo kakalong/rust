@@ -8,8 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use middle::def;
-use middle::ty;
+use rustc::hir::def::Def;
+use rustc::ty;
 use lint::{LateContext, LintContext, LintArray};
 use lint::{LintPass, LateLintPass};
 
@@ -17,8 +17,8 @@ use syntax::ast;
 use syntax::attr::{self, AttrMetaMethods};
 use syntax::codemap::Span;
 
-use rustc_front::hir;
-use rustc_front::intravisit::FnKind;
+use rustc::hir::{self, PatKind};
+use rustc::hir::intravisit::FnKind;
 
 #[derive(PartialEq)]
 pub enum MethodLateContext {
@@ -30,7 +30,7 @@ pub enum MethodLateContext {
 pub fn method_context(cx: &LateContext, id: ast::NodeId, span: Span) -> MethodLateContext {
     let def_id = cx.tcx.map.local_def_id(id);
     match cx.tcx.impl_or_trait_items.borrow().get(&def_id) {
-        None => cx.sess().span_bug(span, "missing method descriptor?!"),
+        None => span_bug!(span, "missing method descriptor?!"),
         Some(item) => match item.container() {
             ty::TraitContainer(..) => MethodLateContext::TraitDefaultImpl,
             ty::ImplContainer(cid) => {
@@ -63,7 +63,9 @@ impl NonCamelCaseTypes {
 
             // start with a non-lowercase letter rather than non-uppercase
             // ones (some scripts don't have a concept of upper/lowercase)
-            !name.is_empty() && !name.char_at(0).is_lowercase() && !name.contains('_')
+            !name.is_empty() &&
+                !name.chars().next().unwrap().is_lowercase() &&
+                !name.contains('_')
         }
 
         fn to_camel_case(s: &str) -> String {
@@ -138,7 +140,7 @@ impl LateLintPass for NonCamelCaseTypes {
 declare_lint! {
     pub NON_SNAKE_CASE,
     Warn,
-    "methods, functions, lifetime parameters and modules should have snake case names"
+    "variables, methods, functions, lifetime parameters and modules should have snake case names"
 }
 
 #[derive(Copy, Clone)]
@@ -237,7 +239,7 @@ impl LateLintPass for NonSnakeCase {
                 fk: FnKind, _: &hir::FnDecl,
                 _: &hir::Block, span: Span, id: ast::NodeId) {
         match fk {
-            FnKind::Method(name, _, _) => match method_context(cx, id, span) {
+            FnKind::Method(name, _, _, _) => match method_context(cx, id, span) {
                 MethodLateContext::PlainImpl => {
                     self.check_snake_case(cx, "method", &name.as_str(), Some(span))
                 },
@@ -246,10 +248,10 @@ impl LateLintPass for NonSnakeCase {
                 },
                 _ => (),
             },
-            FnKind::ItemFn(name, _, _, _, _, _) => {
+            FnKind::ItemFn(name, _, _, _, _, _, _) => {
                 self.check_snake_case(cx, "function", &name.as_str(), Some(span))
             },
-            _ => (),
+            FnKind::Closure(_) => (),
         }
     }
 
@@ -272,9 +274,9 @@ impl LateLintPass for NonSnakeCase {
     }
 
     fn check_pat(&mut self, cx: &LateContext, p: &hir::Pat) {
-        if let &hir::PatIdent(_, ref path1, _) = &p.node {
+        if let &PatKind::Ident(_, ref path1, _) = &p.node {
             let def = cx.tcx.def_map.borrow().get(&p.id).map(|d| d.full_def());
-            if let Some(def::DefLocal(..)) = def {
+            if let Some(Def::Local(..)) = def {
                 self.check_snake_case(cx, "variable", &path1.node.name.as_str(), Some(p.span));
             }
         }
@@ -283,10 +285,7 @@ impl LateLintPass for NonSnakeCase {
     fn check_struct_def(&mut self, cx: &LateContext, s: &hir::VariantData,
                         _: ast::Name, _: &hir::Generics, _: ast::NodeId) {
         for sf in s.fields() {
-            if let hir::StructField_ { kind: hir::NamedField(name, _), .. } = sf.node {
-                self.check_snake_case(cx, "structure field", &name.as_str(),
-                                      Some(sf.span));
-            }
+            self.check_snake_case(cx, "structure field", &sf.name.as_str(), Some(sf.span));
         }
     }
 }
@@ -362,7 +361,7 @@ impl LateLintPass for NonUpperCaseGlobals {
     fn check_pat(&mut self, cx: &LateContext, p: &hir::Pat) {
         // Lint for constants that look like binding identifiers (#7526)
         match (&p.node, cx.tcx.def_map.borrow().get(&p.id).map(|d| d.full_def())) {
-            (&hir::PatIdent(_, ref path1, _), Some(def::DefConst(..))) => {
+            (&PatKind::Ident(_, ref path1, _), Some(Def::Const(..))) => {
                 NonUpperCaseGlobals::check_upper_case(cx, "constant in pattern",
                                                       path1.node.name, p.span);
             }

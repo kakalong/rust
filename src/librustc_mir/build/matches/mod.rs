@@ -15,9 +15,8 @@
 
 use build::{BlockAnd, BlockAndExtension, Builder};
 use rustc_data_structures::fnv::FnvHashMap;
-use rustc::middle::const_eval::ConstVal;
-use rustc::middle::region::CodeExtent;
-use rustc::middle::ty::{AdtDef, Ty};
+use rustc::middle::const_val::ConstVal;
+use rustc::ty::{AdtDef, Ty};
 use rustc::mir::repr::*;
 use hair::*;
 use syntax::ast::{Name, NodeId};
@@ -38,43 +37,44 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                       -> BlockAnd<()> {
         let discriminant_lvalue = unpack!(block = self.as_lvalue(block, discriminant));
 
-        // Before we do anything, create uninitialized variables with
-        // suitable extent for all of the bindings in this match. It's
-        // easiest to do this up front because some of these arms may
-        // be unreachable or reachable multiple times.
-        let var_extent = self.extent_of_innermost_scope();
-        for arm in &arms {
-            self.declare_bindings(var_extent, &arm.patterns[0]);
-        }
-
         let mut arm_blocks = ArmBlocks {
             blocks: arms.iter()
                         .map(|_| self.cfg.start_new_block())
                         .collect(),
         };
 
-        let arm_bodies: Vec<ExprRef<'tcx>> =
-            arms.iter()
-                .map(|arm| arm.body.clone())
-                .collect();
+        // Get the body expressions and their scopes, while declaring bindings.
+        let arm_bodies: Vec<_> = arms.iter().enumerate().map(|(i, arm)| {
+            // Assume that all expressions are wrapped in Scope.
+            let body = self.hir.mirror(arm.body.clone());
+            match body.kind {
+                ExprKind::Scope { extent, value } => {
+                    let scope_id = self.push_scope(extent, arm_blocks.blocks[i]);
+                    self.declare_bindings(scope_id, &arm.patterns[0]);
+                    (extent, self.scopes.pop().unwrap(), value)
+                }
+                _ => {
+                    span_bug!(body.span, "arm body is not wrapped in Scope {:?}",
+                              body.kind);
+                }
+            }
+        }).collect();
 
         // assemble a list of candidates: there is one candidate per
         // pattern, which means there may be more than one candidate
         // *per arm*. These candidates are kept sorted such that the
-        // highest priority candidate comes last in the list. This the
-        // reverse of the order in which candidates are written in the
-        // source.
+        // highest priority candidate comes first in the list.
+        // (i.e. same order as in source)
         let candidates: Vec<_> =
             arms.iter()
                 .enumerate()
-                .rev() // highest priority comes last
                 .flat_map(|(arm_index, arm)| {
                     arm.patterns.iter()
-                                .rev()
                                 .map(move |pat| (arm_index, pat, arm.guard.clone()))
                 })
                 .map(|(arm_index, pattern, guard)| {
                     Candidate {
+                        span: pattern.span,
                         match_pairs: vec![MatchPair::new(discriminant_lvalue.clone(), pattern)],
                         bindings: vec![],
                         guard: guard,
@@ -91,17 +91,24 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         // an empty vector to be returned here, but the algorithm is
         // not entirely precise
         if !otherwise.is_empty() {
-            let join_block = self.join_otherwise_blocks(otherwise);
-            self.panic(join_block);
+            let join_block = self.join_otherwise_blocks(span, otherwise);
+            self.panic(join_block, "something about matches algorithm not being precise", span);
         }
 
         // all the arm blocks will rejoin here
         let end_block = self.cfg.start_new_block();
 
-        for (arm_index, arm_body) in arm_bodies.into_iter().enumerate() {
+        let scope_id = self.innermost_scope_id();
+        for (arm_index, (extent, scope, body)) in arm_bodies.into_iter().enumerate() {
             let mut arm_block = arm_blocks.blocks[arm_index];
-            unpack!(arm_block = self.into(destination, arm_block, arm_body));
-            self.cfg.terminate(arm_block, Terminator::Goto { target: end_block });
+            // Re-enter the scope we created the bindings in.
+            self.scopes.push(scope);
+            unpack!(arm_block = self.into(destination, arm_block, body));
+            unpack!(arm_block = self.pop_scope(extent, arm_block));
+            self.cfg.terminate(arm_block,
+                               scope_id,
+                               span,
+                               TerminatorKind::Goto { target: end_block });
         }
 
         end_block.unit()
@@ -109,7 +116,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
     pub fn expr_into_pattern(&mut self,
                              mut block: BasicBlock,
-                             var_extent: CodeExtent, // lifetime of vars
+                             var_scope_id: ScopeId, // lifetime of vars
                              irrefutable_pat: Pattern<'tcx>,
                              initializer: ExprRef<'tcx>)
                              -> BlockAnd<()> {
@@ -121,7 +128,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                                    var,
                                    ty,
                                    subpattern: None } => {
-                let index = self.declare_binding(var_extent,
+                let index = self.declare_binding(var_scope_id,
                                                  mutability,
                                                  name,
                                                  var,
@@ -134,22 +141,23 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         }
         let lvalue = unpack!(block = self.as_lvalue(block, initializer));
         self.lvalue_into_pattern(block,
-                                 var_extent,
+                                 var_scope_id,
                                  irrefutable_pat,
                                  &lvalue)
     }
 
     pub fn lvalue_into_pattern(&mut self,
                                mut block: BasicBlock,
-                               var_extent: CodeExtent,
+                               var_scope_id: ScopeId,
                                irrefutable_pat: Pattern<'tcx>,
                                initializer: &Lvalue<'tcx>)
                                -> BlockAnd<()> {
         // first, creating the bindings
-        self.declare_bindings(var_extent, &irrefutable_pat);
+        self.declare_bindings(var_scope_id, &irrefutable_pat);
 
         // create a dummy candidate
         let mut candidate = Candidate {
+            span: irrefutable_pat.span,
             match_pairs: vec![MatchPair::new(initializer.clone(), &irrefutable_pat)],
             bindings: vec![],
             guard: None,
@@ -161,10 +169,10 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         unpack!(block = self.simplify_candidate(block, &mut candidate));
 
         if !candidate.match_pairs.is_empty() {
-            self.hir.span_bug(candidate.match_pairs[0].pattern.span,
-                              &format!("match pairs {:?} remaining after simplifying \
-                                        irrefutable pattern",
-                                       candidate.match_pairs));
+            span_bug!(candidate.match_pairs[0].pattern.span,
+                      "match pairs {:?} remaining after simplifying \
+                       irrefutable pattern",
+                      candidate.match_pairs);
         }
 
         // now apply the bindings, which will also declare the variables
@@ -173,29 +181,29 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         block.unit()
     }
 
-    pub fn declare_bindings(&mut self, var_extent: CodeExtent, pattern: &Pattern<'tcx>) {
+    pub fn declare_bindings(&mut self, var_scope_id: ScopeId, pattern: &Pattern<'tcx>) {
         match *pattern.kind {
             PatternKind::Binding { mutability, name, mode: _, var, ty, ref subpattern } => {
-                self.declare_binding(var_extent, mutability, name, var, ty, pattern.span);
+                self.declare_binding(var_scope_id, mutability, name, var, ty, pattern.span);
                 if let Some(subpattern) = subpattern.as_ref() {
-                    self.declare_bindings(var_extent, subpattern);
+                    self.declare_bindings(var_scope_id, subpattern);
                 }
             }
             PatternKind::Array { ref prefix, ref slice, ref suffix } |
             PatternKind::Slice { ref prefix, ref slice, ref suffix } => {
                 for subpattern in prefix.iter().chain(slice).chain(suffix) {
-                    self.declare_bindings(var_extent, subpattern);
+                    self.declare_bindings(var_scope_id, subpattern);
                 }
             }
             PatternKind::Constant { .. } | PatternKind::Range { .. } | PatternKind::Wild => {
             }
             PatternKind::Deref { ref subpattern } => {
-                self.declare_bindings(var_extent, subpattern);
+                self.declare_bindings(var_scope_id, subpattern);
             }
             PatternKind::Leaf { ref subpatterns } |
             PatternKind::Variant { ref subpatterns, .. } => {
                 for subpattern in subpatterns {
-                    self.declare_bindings(var_extent, &subpattern.pattern);
+                    self.declare_bindings(var_scope_id, &subpattern.pattern);
                 }
             }
         }
@@ -209,7 +217,10 @@ struct ArmBlocks {
 }
 
 #[derive(Clone, Debug)]
-struct Candidate<'pat, 'tcx:'pat> {
+pub struct Candidate<'pat, 'tcx:'pat> {
+    // span of the original pattern that gave rise to this candidate
+    span: Span,
+
     // all of these must be satisfied...
     match_pairs: Vec<MatchPair<'pat, 'tcx>>,
 
@@ -235,12 +246,19 @@ struct Binding<'tcx> {
 }
 
 #[derive(Clone, Debug)]
-struct MatchPair<'pat, 'tcx:'pat> {
+pub struct MatchPair<'pat, 'tcx:'pat> {
     // this lvalue...
     lvalue: Lvalue<'tcx>,
 
     // ... must match this pattern.
     pattern: &'pat Pattern<'tcx>,
+
+    // HACK(eddyb) This is used to toggle whether a Slice pattern
+    // has had its length checked. This is only necessary because
+    // the "rest" part of the pattern right now has type &[T] and
+    // as such, it requires an Rvalue::Slice to be generated.
+    // See RFC 495 / issue #23121 for the eventual (proper) solution.
+    slice_len_checked: bool
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -259,7 +277,7 @@ enum TestKind<'tcx> {
 
     // test for equality
     Eq {
-        value: Literal<'tcx>,
+        value: ConstVal,
         ty: Ty<'tcx>,
     },
 
@@ -272,13 +290,13 @@ enum TestKind<'tcx> {
 
     // test length of the slice is equal to len
     Len {
-        len: usize,
+        len: u64,
         op: BinOp,
     },
 }
 
 #[derive(Debug)]
-struct Test<'tcx> {
+pub struct Test<'tcx> {
     span: Span,
     kind: TestKind<'tcx>,
 }
@@ -290,9 +308,9 @@ impl<'a,'tcx> Builder<'a,'tcx> {
     /// The main match algorithm. It begins with a set of candidates
     /// `candidates` and has the job of generating code to determine
     /// which of these candidates, if any, is the correct one. The
-    /// candidates are sorted in inverse priority -- so the last item
-    /// in the list has highest priority. When a candidate is found to
-    /// match the value, we will generate a branch to the appropriate
+    /// candidates are sorted such that the first item in the list
+    /// has the highest priority. When a candidate is found to match
+    /// the value, we will generate a branch to the appropriate
     /// block found in `arm_blocks`.
     ///
     /// The return value is a list of "otherwise" blocks. These are
@@ -324,17 +342,17 @@ impl<'a,'tcx> Builder<'a,'tcx> {
             unpack!(block = self.simplify_candidate(block, candidate));
         }
 
-        // The candidates are inversely sorted by priority. Check to
-        // see whether the candidates in the front of the queue (and
-        // hence back of the vec) have satisfied all their match
+        // The candidates are sorted by priority. Check to see
+        // whether the higher priority candidates (and hence at
+        // the front of the vec) have satisfied all their match
         // pairs.
         let fully_matched =
-            candidates.iter().rev().take_while(|c| c.match_pairs.is_empty()).count();
+            candidates.iter().take_while(|c| c.match_pairs.is_empty()).count();
         debug!("match_candidates: {:?} candidates fully matched", fully_matched);
-        for _ in 0..fully_matched {
+        let mut unmatched_candidates = candidates.split_off(fully_matched);
+        for candidate in candidates {
             // If so, apply any bindings, test the guard (if any), and
             // branch to the arm.
-            let candidate = candidates.pop().unwrap();
             if let Some(b) = self.bind_and_guard_matched_candidate(block, arm_blocks, candidate) {
                 block = b;
             } else {
@@ -346,13 +364,13 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
         // If there are no candidates that still need testing, we're done.
         // Since all matches are exhaustive, execution should never reach this point.
-        if candidates.is_empty() {
+        if unmatched_candidates.is_empty() {
             return vec![block];
         }
 
         // Test candidates where possible.
         let (otherwise, tested_candidates) =
-            self.test_candidates(span, arm_blocks, &candidates, block);
+            self.test_candidates(span, arm_blocks, &unmatched_candidates, block);
 
         // If the target candidates were exhaustive, then we are done.
         if otherwise.is_empty() {
@@ -361,27 +379,31 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
         // If all candidates were sorted into `target_candidates` somewhere, then
         // the initial set was inexhaustive.
-        let untested_candidates = candidates.len() - tested_candidates;
-        if untested_candidates == 0 {
+        let untested_candidates = unmatched_candidates.split_off(tested_candidates);
+        if untested_candidates.len() == 0 {
             return otherwise;
         }
 
         // Otherwise, let's process those remaining candidates.
-        let join_block = self.join_otherwise_blocks(otherwise);
-        candidates.truncate(untested_candidates);
-        self.match_candidates(span, arm_blocks, candidates, join_block)
+        let join_block = self.join_otherwise_blocks(span, otherwise);
+        self.match_candidates(span, arm_blocks, untested_candidates, join_block)
     }
 
     fn join_otherwise_blocks(&mut self,
+                             span: Span,
                              otherwise: Vec<BasicBlock>)
                              -> BasicBlock
     {
+        let scope_id = self.innermost_scope_id();
         if otherwise.len() == 1 {
             otherwise[0]
         } else {
             let join_block = self.cfg.start_new_block();
             for block in otherwise {
-                self.cfg.terminate(block, Terminator::Goto { target: join_block });
+                self.cfg.terminate(block,
+                                   scope_id,
+                                   span,
+                                   TerminatorKind::Goto { target: join_block });
             }
             join_block
         }
@@ -419,7 +441,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
     /// But there may also be candidates that the test just doesn't
     /// apply to. For example, consider the case of #29740:
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// match x {
     ///     "foo" => ...,
     ///     "bar" => ...,
@@ -461,7 +483,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                              -> (Vec<BasicBlock>, usize)
     {
         // extract the match-pair from the highest priority candidate
-        let match_pair = &candidates.last().unwrap().match_pairs[0];
+        let match_pair = &candidates.first().unwrap().match_pairs[0];
         let mut test = self.test(match_pair);
 
         // most of the time, the test to perform is simply a function
@@ -470,7 +492,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         // available
         match test.kind {
             TestKind::SwitchInt { switch_ty, ref mut options, ref mut indices } => {
-                for candidate in candidates.iter().rev() {
+                for candidate in candidates.iter() {
                     if !self.add_cases_to_switch(&match_pair.lvalue,
                                                  candidate,
                                                  switch_ty,
@@ -497,7 +519,6 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         // that point, we stop sorting.
         let tested_candidates =
             candidates.iter()
-                      .rev()
                       .take_while(|c| self.sort_candidate(&match_pair.lvalue,
                                                           &test,
                                                           c,
@@ -549,16 +570,25 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
         let arm_block = arm_blocks.blocks[candidate.arm_index];
 
+        let scope_id = self.innermost_scope_id();
         if let Some(guard) = candidate.guard {
             // the block to branch to if the guard fails; if there is no
             // guard, this block is simply unreachable
+            let guard = self.hir.mirror(guard);
+            let guard_span = guard.span;
             let cond = unpack!(block = self.as_operand(block, guard));
             let otherwise = self.cfg.start_new_block();
-            self.cfg.terminate(block, Terminator::If { cond: cond,
-                                                       targets: [arm_block, otherwise]});
+            self.cfg.terminate(block,
+                               scope_id,
+                               guard_span,
+                               TerminatorKind::If { cond: cond,
+                                                    targets: (arm_block, otherwise)});
             Some(otherwise)
         } else {
-            self.cfg.terminate(block, Terminator::Goto { target: arm_block });
+            self.cfg.terminate(block,
+                               scope_id,
+                               candidate.span,
+                               TerminatorKind::Goto { target: arm_block });
             None
         }
     }
@@ -583,12 +613,14 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                     Rvalue::Ref(region, borrow_kind, binding.source),
             };
 
-            self.cfg.push_assign(block, binding.span, &Lvalue::Var(var_index), rvalue);
+            let scope_id = self.innermost_scope_id();
+            self.cfg.push_assign(block, scope_id, binding.span,
+                                 &Lvalue::Var(var_index), rvalue);
         }
     }
 
     fn declare_binding(&mut self,
-                       var_extent: CodeExtent,
+                       var_scope_id: ScopeId,
                        mutability: Mutability,
                        name: Name,
                        var_id: NodeId,
@@ -596,17 +628,20 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                        span: Span)
                        -> u32
     {
-        debug!("declare_binding(var_id={:?}, name={:?}, var_ty={:?}, var_extent={:?}, span={:?})",
-               var_id, name, var_ty, var_extent, span);
+        debug!("declare_binding(var_id={:?}, name={:?}, var_ty={:?}, var_scope_id={:?}, span={:?})",
+               var_id, name, var_ty, var_scope_id, span);
 
         let index = self.var_decls.len();
         self.var_decls.push(VarDecl::<'tcx> {
+            scope: var_scope_id,
             mutability: mutability,
             name: name,
             ty: var_ty.clone(),
+            span: span,
         });
         let index = index as u32;
-        self.schedule_drop(span, var_extent, DropKind::Deep, &Lvalue::Var(index), var_ty);
+        let extent = self.scope_auxiliary[var_scope_id].extent;
+        self.schedule_drop(span, extent, &Lvalue::Var(index), var_ty);
         self.var_indices.insert(var_id, index);
 
         debug!("declare_binding: index={:?}", index);

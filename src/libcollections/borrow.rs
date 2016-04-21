@@ -49,6 +49,18 @@ pub trait ToOwned {
     type Owned: Borrow<Self>;
 
     /// Creates owned data from borrowed data, usually by cloning.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// let s = "a"; // &str
+    /// let ss = s.to_owned(); // String
+    ///
+    /// let v = &[1, 2]; // slice
+    /// let vv = v.to_owned(); // Vec
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn to_owned(&self) -> Self::Owned;
 }
@@ -95,11 +107,13 @@ pub enum Cow<'a, B: ?Sized + 'a>
 {
     /// Borrowed data.
     #[stable(feature = "rust1", since = "1.0.0")]
-    Borrowed(&'a B),
+    Borrowed(#[stable(feature = "rust1", since = "1.0.0")] &'a B),
 
     /// Owned data.
     #[stable(feature = "rust1", since = "1.0.0")]
-    Owned(<B as ToOwned>::Owned),
+    Owned(
+        #[stable(feature = "rust1", since = "1.0.0")] <B as ToOwned>::Owned
+    ),
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -242,22 +256,8 @@ impl<'a, B: ?Sized> Hash for Cow<'a, B> where B: Hash + ToOwned {
     }
 }
 
-/// Trait for moving into a `Cow`.
-#[unstable(feature = "into_cow", reason = "may be replaced by `convert::Into`",
-           issue = "27735")]
-pub trait IntoCow<'a, B: ?Sized> where B: ToOwned {
-    /// Moves `self` into `Cow`
-    fn into_cow(self) -> Cow<'a, B>;
-}
-
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, B: ?Sized> IntoCow<'a, B> for Cow<'a, B> where B: ToOwned {
-    fn into_cow(self) -> Cow<'a, B> {
-        self
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
+#[allow(deprecated)]
 impl<'a, T: ?Sized + ToOwned> AsRef<T> for Cow<'a, T> {
     fn as_ref(&self) -> &T {
         self

@@ -28,13 +28,16 @@
 //! Use the former for unit-like structs and the latter for structs with
 //! a `pub fn new()`.
 
-use middle::{cfg, def, infer, stability, traits};
+use rustc::hir::def::Def;
 use middle::cstore::CrateStore;
-use middle::def_id::DefId;
-use middle::subst::Substs;
-use middle::ty::{self, Ty};
-use middle::ty::adjustment;
-use rustc::front::map as hir_map;
+use rustc::hir::def_id::DefId;
+use middle::stability;
+use rustc::{cfg, infer};
+use rustc::ty::subst::Substs;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::adjustment;
+use rustc::traits::{self, ProjectionMode};
+use rustc::hir::map as hir_map;
 use util::nodemap::{NodeSet};
 use lint::{Level, LateContext, LintContext, LintArray, Lint};
 use lint::{LintPass, LateLintPass};
@@ -45,8 +48,8 @@ use syntax::{ast};
 use syntax::attr::{self, AttrMetaMethods};
 use syntax::codemap::{self, Span};
 
-use rustc_front::hir;
-use rustc_front::intravisit::FnKind;
+use rustc::hir::{self, PatKind};
+use rustc::hir::intravisit::FnKind;
 
 use bad_style::{MethodLateContext, method_context};
 
@@ -72,7 +75,7 @@ impl LateLintPass for WhileTrue {
     fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
         if let hir::ExprWhile(ref cond, _, _) = e.node {
             if let hir::ExprLit(ref lit) = cond.node {
-                if let ast::LitBool(true) = lit.node {
+                if let ast::LitKind::Bool(true) = lit.node {
                     cx.span_lint(WHILE_TRUE, e.span,
                                  "denote infinite loops with loop { ... }");
                 }
@@ -125,7 +128,7 @@ impl LateLintPass for BoxPointers {
             hir::ItemStruct(ref struct_def, _) => {
                 for struct_field in struct_def.fields() {
                     self.check_heap_type(cx, struct_field.span,
-                                         cx.tcx.node_id_to_type(struct_field.node.id));
+                                         cx.tcx.node_id_to_type(struct_field.id));
                 }
             }
             _ => ()
@@ -156,23 +159,21 @@ impl LintPass for NonShorthandFieldPatterns {
 impl LateLintPass for NonShorthandFieldPatterns {
     fn check_pat(&mut self, cx: &LateContext, pat: &hir::Pat) {
         let def_map = cx.tcx.def_map.borrow();
-        if let hir::PatStruct(_, ref v, _) = pat.node {
+        if let PatKind::Struct(_, ref v, _) = pat.node {
             let field_pats = v.iter().filter(|fieldpat| {
                 if fieldpat.node.is_shorthand {
                     return false;
                 }
                 let def = def_map.get(&fieldpat.node.pat.id).map(|d| d.full_def());
                 if let Some(def_id) = cx.tcx.map.opt_local_def_id(fieldpat.node.pat.id) {
-                    def == Some(def::DefLocal(def_id, fieldpat.node.pat.id))
+                    def == Some(Def::Local(def_id, fieldpat.node.pat.id))
                 } else {
                     false
                 }
             });
             for fieldpat in field_pats {
-                if let hir::PatIdent(_, ident, None) = fieldpat.node.pat.node {
-                    if ident.node.name == fieldpat.node.name {
-                        // FIXME: should this comparison really be done on the name?
-                        // doing it on the ident will fail during compilation of libcore
+                if let PatKind::Ident(_, ident, None) = fieldpat.node.pat.node {
+                    if ident.node.unhygienic_name == fieldpat.node.name {
                         cx.span_lint(NON_SHORTHAND_FIELD_PATTERNS, fieldpat.span,
                                      &format!("the `{}:` in this pattern is redundant and can \
                                               be removed", ident.node))
@@ -223,10 +224,10 @@ impl LateLintPass for UnsafeCode {
     fn check_fn(&mut self, cx: &LateContext, fk: FnKind, _: &hir::FnDecl,
                 _: &hir::Block, span: Span, _: ast::NodeId) {
         match fk {
-            FnKind::ItemFn(_, _, hir::Unsafety::Unsafe, _, _, _) =>
+            FnKind::ItemFn(_, _, hir::Unsafety::Unsafe, _, _, _, _) =>
                 cx.span_lint(UNSAFE_CODE, span, "declaration of an `unsafe` function"),
 
-            FnKind::Method(_, sig, _) => {
+            FnKind::Method(_, sig, _, _) => {
                 if sig.unsafety == hir::Unsafety::Unsafe {
                     cx.span_lint(UNSAFE_CODE, span, "implementation of an `unsafe` method")
                 }
@@ -309,7 +310,7 @@ impl MissingDoc {
 
         let has_doc = attrs.iter().any(|a| {
             match a.node.value.node {
-                ast::MetaNameValue(ref name, _) if *name == "doc" => true,
+                ast::MetaItemKind::NameValue(ref name, _) if *name == "doc" => true,
                 _ => false
             }
         });
@@ -429,12 +430,12 @@ impl LateLintPass for MissingDoc {
     }
 
     fn check_struct_field(&mut self, cx: &LateContext, sf: &hir::StructField) {
-        if let hir::NamedField(_, vis) = sf.node.kind {
-            if vis == hir::Public || self.in_variant {
+        if !sf.is_positional() {
+            if sf.vis == hir::Public || self.in_variant {
                 let cur_struct_def = *self.struct_def_stack.last()
                     .expect("empty struct_def_stack");
                 self.check_missing_docs_attrs(cx, Some(cur_struct_def),
-                                              &sf.node.attrs, sf.span,
+                                              &sf.attrs, sf.span,
                                               "a struct field")
             }
         }
@@ -577,74 +578,71 @@ impl LateLintPass for MissingDebugImplementations {
 declare_lint! {
     DEPRECATED,
     Warn,
-    "detects use of #[rustc_deprecated] items"
+    "detects use of deprecated items"
 }
 
-/// Checks for use of items with `#[rustc_deprecated]` attributes
+/// Checks for use of items with `#[deprecated]` or `#[rustc_deprecated]` attributes
 #[derive(Copy, Clone)]
-pub struct Stability;
+pub struct Deprecated;
 
-impl Stability {
-    fn lint(&self, cx: &LateContext, _id: DefId,
-            span: Span, stability: &Option<&attr::Stability>) {
+impl Deprecated {
+    fn lint(&self, cx: &LateContext, _id: DefId, span: Span,
+            stability: &Option<&attr::Stability>, deprecation: &Option<attr::Deprecation>) {
         // Deprecated attributes apply in-crate and cross-crate.
-        let (lint, label) = match *stability {
-            Some(&attr::Stability { depr: Some(_), .. }) =>
-                (DEPRECATED, "deprecated"),
-            _ => return
-        };
+        if let Some(&attr::Stability{rustc_depr: Some(attr::RustcDeprecation{ref reason, ..}), ..})
+                = *stability {
+            output(cx, DEPRECATED, span, Some(&reason))
+        } else if let Some(attr::Deprecation{ref note, ..}) = *deprecation {
+            output(cx, DEPRECATED, span, note.as_ref().map(|x| &**x))
+        }
 
-        output(cx, span, stability, lint, label);
-
-        fn output(cx: &LateContext, span: Span, stability: &Option<&attr::Stability>,
-                  lint: &'static Lint, label: &'static str) {
-            let msg = match *stability {
-                Some(&attr::Stability {depr: Some(attr::Deprecation {ref reason, ..}), ..}) => {
-                    format!("use of {} item: {}", label, reason)
-                }
-                _ => format!("use of {} item", label)
+        fn output(cx: &LateContext, lint: &'static Lint, span: Span, note: Option<&str>) {
+            let msg = if let Some(note) = note {
+                format!("use of deprecated item: {}", note)
+            } else {
+                format!("use of deprecated item")
             };
 
-            cx.span_lint(lint, span, &msg[..]);
+            cx.span_lint(lint, span, &msg);
         }
     }
 }
 
-impl LintPass for Stability {
+impl LintPass for Deprecated {
     fn get_lints(&self) -> LintArray {
         lint_array!(DEPRECATED)
     }
 }
 
-impl LateLintPass for Stability {
+impl LateLintPass for Deprecated {
     fn check_item(&mut self, cx: &LateContext, item: &hir::Item) {
         stability::check_item(cx.tcx, item, false,
-                              &mut |id, sp, stab|
-                                self.lint(cx, id, sp, &stab));
+                              &mut |id, sp, stab, depr|
+                                self.lint(cx, id, sp, &stab, &depr));
     }
 
     fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
         stability::check_expr(cx.tcx, e,
-                              &mut |id, sp, stab|
-                                self.lint(cx, id, sp, &stab));
+                              &mut |id, sp, stab, depr|
+                                self.lint(cx, id, sp, &stab, &depr));
     }
 
     fn check_path(&mut self, cx: &LateContext, path: &hir::Path, id: ast::NodeId) {
         stability::check_path(cx.tcx, path, id,
-                              &mut |id, sp, stab|
-                                self.lint(cx, id, sp, &stab));
+                              &mut |id, sp, stab, depr|
+                                self.lint(cx, id, sp, &stab, &depr));
     }
 
     fn check_path_list_item(&mut self, cx: &LateContext, item: &hir::PathListItem) {
         stability::check_path_list_item(cx.tcx, item,
-                                         &mut |id, sp, stab|
-                                           self.lint(cx, id, sp, &stab));
+                                         &mut |id, sp, stab, depr|
+                                           self.lint(cx, id, sp, &stab, &depr));
     }
 
     fn check_pat(&mut self, cx: &LateContext, pat: &hir::Pat) {
         stability::check_pat(cx.tcx, pat,
-                             &mut |id, sp, stab|
-                                self.lint(cx, id, sp, &stab));
+                             &mut |id, sp, stab, depr|
+                                self.lint(cx, id, sp, &stab, &depr));
     }
 }
 
@@ -673,7 +671,7 @@ impl LateLintPass for UnconditionalRecursion {
                 cx.tcx.impl_or_trait_item(cx.tcx.map.local_def_id(id)).as_opt_method()
             }
             // closures can't recur, so they don't matter.
-            FnKind::Closure => return
+            FnKind::Closure(_) => return
         };
 
         // Walk through this function (say `f`) looking to see if
@@ -757,19 +755,19 @@ impl LateLintPass for UnconditionalRecursion {
         // no break */ }`) shouldn't be linted unless it actually
         // recurs.
         if !reached_exit_without_self_call && !self_call_spans.is_empty() {
-            cx.span_lint(UNCONDITIONAL_RECURSION, sp,
-                         "function cannot return without recurring");
+            let mut db = cx.struct_span_lint(UNCONDITIONAL_RECURSION, sp,
+                                             "function cannot return without recurring");
 
             // FIXME #19668: these could be span_lint_note's instead of this manual guard.
             if cx.current_level(UNCONDITIONAL_RECURSION) != Level::Allow {
-                let sess = cx.sess();
                 // offer some help to the programmer.
                 for call in &self_call_spans {
-                    sess.span_note(*call, "recursive call site")
+                    db.span_note(*call, "recursive call site");
                 }
-                sess.fileline_help(sp, "a `loop` may express intention \
-                                        better if this is on purpose")
+                db.fileline_help(sp, "a `loop` may express intention \
+                                      better if this is on purpose");
             }
+            db.emit();
         }
 
         // all done
@@ -778,7 +776,7 @@ impl LateLintPass for UnconditionalRecursion {
         // Functions for identifying if the given Expr NodeId `id`
         // represents a call to the function `fn_id`/method `method`.
 
-        fn expr_refers_to_this_fn(tcx: &ty::ctxt,
+        fn expr_refers_to_this_fn(tcx: &TyCtxt,
                                   fn_id: ast::NodeId,
                                   id: ast::NodeId) -> bool {
             match tcx.map.get(id) {
@@ -794,7 +792,7 @@ impl LateLintPass for UnconditionalRecursion {
         }
 
         // Check if the expression `id` performs a call to `method`.
-        fn expr_refers_to_this_method(tcx: &ty::ctxt,
+        fn expr_refers_to_this_method(tcx: &TyCtxt,
                                       method: &ty::Method,
                                       id: ast::NodeId) -> bool {
             // Check for method calls and overloaded operators.
@@ -824,7 +822,7 @@ impl LateLintPass for UnconditionalRecursion {
             match tcx.map.get(id) {
                 hir_map::NodeExpr(&hir::Expr { node: hir::ExprCall(ref callee, _), .. }) => {
                     match tcx.def_map.borrow().get(&callee.id).map(|d| d.full_def()) {
-                        Some(def::DefMethod(def_id)) => {
+                        Some(Def::Method(def_id)) => {
                             let item_substs =
                                 tcx.tables.borrow().item_substs
                                                    .get(&callee.id)
@@ -842,7 +840,7 @@ impl LateLintPass for UnconditionalRecursion {
 
         // Check if the method call to the method with the ID `callee_id`
         // and instantiated with `callee_substs` refers to method `method`.
-        fn method_call_refers_to_method<'tcx>(tcx: &ty::ctxt<'tcx>,
+        fn method_call_refers_to_method<'tcx>(tcx: &TyCtxt<'tcx>,
                                               method: &ty::Method,
                                               callee_id: DefId,
                                               callee_substs: &Substs<'tcx>,
@@ -859,9 +857,7 @@ impl LateLintPass for UnconditionalRecursion {
                 // A trait method, from any number of possible sources.
                 // Attempt to select a concrete impl before checking.
                 ty::TraitContainer(trait_def_id) => {
-                    let trait_substs = callee_substs.clone().method_to_trait();
-                    let trait_substs = tcx.mk_substs(trait_substs);
-                    let trait_ref = ty::TraitRef::new(trait_def_id, trait_substs);
+                    let trait_ref = callee_substs.to_trait_ref(tcx, trait_def_id);
                     let trait_ref = ty::Binder(trait_ref);
                     let span = tcx.map.span(expr_id);
                     let obligation =
@@ -874,7 +870,10 @@ impl LateLintPass for UnconditionalRecursion {
                     let node_id = tcx.map.as_local_node_id(method.def_id).unwrap();
 
                     let param_env = ty::ParameterEnvironment::for_item(tcx, node_id);
-                    let infcx = infer::new_infer_ctxt(tcx, &tcx.tables, Some(param_env), false);
+                    let infcx = infer::new_infer_ctxt(tcx,
+                                                      &tcx.tables,
+                                                      Some(param_env),
+                                                      ProjectionMode::AnyFinal);
                     let mut selcx = traits::SelectionContext::new(&infcx);
                     match selcx.select(&obligation) {
                         // The method comes from a `T: Trait` bound.
@@ -971,6 +970,12 @@ declare_lint! {
     "const items will not have their symbols exported"
 }
 
+declare_lint! {
+    NO_MANGLE_GENERIC_ITEMS,
+    Warn,
+    "generic items must be mangled"
+}
+
 #[derive(Copy, Clone)]
 pub struct InvalidNoMangleItems;
 
@@ -978,19 +983,26 @@ impl LintPass for InvalidNoMangleItems {
     fn get_lints(&self) -> LintArray {
         lint_array!(PRIVATE_NO_MANGLE_FNS,
                     PRIVATE_NO_MANGLE_STATICS,
-                    NO_MANGLE_CONST_ITEMS)
+                    NO_MANGLE_CONST_ITEMS,
+                    NO_MANGLE_GENERIC_ITEMS)
     }
 }
 
 impl LateLintPass for InvalidNoMangleItems {
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
         match it.node {
-            hir::ItemFn(..) => {
-                if attr::contains_name(&it.attrs, "no_mangle") &&
-                       !cx.access_levels.is_reachable(it.id) {
-                    let msg = format!("function {} is marked #[no_mangle], but not exported",
-                                      it.name);
-                    cx.span_lint(PRIVATE_NO_MANGLE_FNS, it.span, &msg);
+            hir::ItemFn(_, _, _, _, ref generics, _) => {
+                if attr::contains_name(&it.attrs, "no_mangle") {
+                    if !cx.access_levels.is_reachable(it.id) {
+                        let msg = format!("function {} is marked #[no_mangle], but not exported",
+                                          it.name);
+                        cx.span_lint(PRIVATE_NO_MANGLE_FNS, it.span, &msg);
+                    }
+                    if generics.is_parameterized() {
+                        cx.span_lint(NO_MANGLE_GENERIC_ITEMS,
+                                     it.span,
+                                     "generic functions must be mangled");
+                    }
                 }
             },
             hir::ItemStatic(..) => {
@@ -1032,7 +1044,7 @@ impl LintPass for MutableTransmutes {
 
 impl LateLintPass for MutableTransmutes {
     fn check_expr(&mut self, cx: &LateContext, expr: &hir::Expr) {
-        use syntax::abi::RustIntrinsic;
+        use syntax::abi::Abi::RustIntrinsic;
 
         let msg = "mutating transmuted &mut T from &T may cause undefined behavior,\
                    consider instead using an UnsafeCell";
@@ -1052,13 +1064,13 @@ impl LateLintPass for MutableTransmutes {
                 hir::ExprPath(..) => (),
                 _ => return None
             }
-            if let def::DefFn(did, _) = cx.tcx.resolve_expr(expr) {
+            if let Def::Fn(did) = cx.tcx.resolve_expr(expr) {
                 if !def_id_is_transmute(cx, did) {
                     return None;
                 }
                 let typ = cx.tcx.node_id_to_type(expr.id);
                 match typ.sty {
-                    ty::TyBareFn(_, ref bare_fn) if bare_fn.abi == RustIntrinsic => {
+                    ty::TyFnDef(_, _, ref bare_fn) if bare_fn.abi == RustIntrinsic => {
                         if let ty::FnConverging(to) = bare_fn.sig.0.output {
                             let from = bare_fn.sig.0.inputs[0];
                             return Some((&from.sty, &to.sty));
@@ -1072,13 +1084,10 @@ impl LateLintPass for MutableTransmutes {
 
         fn def_id_is_transmute(cx: &LateContext, def_id: DefId) -> bool {
             match cx.tcx.lookup_item_type(def_id).ty.sty {
-                ty::TyBareFn(_, ref bfty) if bfty.abi == RustIntrinsic => (),
+                ty::TyFnDef(_, _, ref bfty) if bfty.abi == RustIntrinsic => (),
                 _ => return false
             }
-            cx.tcx.with_path(def_id, |path| match path.last() {
-                Some(ref last) => last.name().as_str() == "transmute",
-                _ => false
-            })
+            cx.tcx.item_name(def_id).as_str() == "transmute"
         }
     }
 }

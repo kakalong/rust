@@ -19,8 +19,8 @@ use build::Builder;
 use build::matches::{Candidate, MatchPair, Test, TestKind};
 use hair::*;
 use rustc_data_structures::fnv::FnvHashMap;
-use rustc::middle::const_eval::ConstVal;
-use rustc::middle::ty::{self, Ty};
+use rustc::middle::const_val::ConstVal;
+use rustc::ty::{self, Ty};
 use rustc::mir::repr::*;
 use syntax::codemap::Span;
 
@@ -37,7 +37,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 }
             }
 
-            PatternKind::Constant { value: Literal::Value { .. } }
+            PatternKind::Constant { .. }
             if is_switch_ty(match_pair.pattern.ty) => {
                 // for integers, we use a SwitchInt match, which allows
                 // us to handle more cases
@@ -55,12 +55,11 @@ impl<'a,'tcx> Builder<'a,'tcx> {
             }
 
             PatternKind::Constant { ref value } => {
-                // for other types, we use an equality comparison
                 Test {
                     span: match_pair.pattern.span,
                     kind: TestKind::Eq {
                         value: value.clone(),
-                        ty: match_pair.pattern.ty.clone(),
+                        ty: match_pair.pattern.ty.clone()
                     }
                 }
             }
@@ -76,7 +75,8 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 }
             }
 
-            PatternKind::Slice { ref prefix, ref slice, ref suffix } => {
+            PatternKind::Slice { ref prefix, ref slice, ref suffix }
+                    if !match_pair.slice_len_checked => {
                 let len = prefix.len() + suffix.len();
                 let op = if slice.is_some() {
                     BinOp::Ge
@@ -85,11 +85,12 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 };
                 Test {
                     span: match_pair.pattern.span,
-                    kind: TestKind::Len { len: len, op: op },
+                    kind: TestKind::Len { len: len as u64, op: op },
                 }
             }
 
             PatternKind::Array { .. } |
+            PatternKind::Slice { .. } |
             PatternKind::Wild |
             PatternKind::Binding { .. } |
             PatternKind::Leaf { .. } |
@@ -113,7 +114,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         };
 
         match *match_pair.pattern.kind {
-            PatternKind::Constant { value: Literal::Value { ref value } } => {
+            PatternKind::Constant { ref value } => {
                 // if the lvalues match, the type should match
                 assert_eq!(match_pair.pattern.ty, switch_ty);
 
@@ -126,7 +127,6 @@ impl<'a,'tcx> Builder<'a,'tcx> {
             }
 
             PatternKind::Range { .. } |
-            PatternKind::Constant { .. } |
             PatternKind::Variant { .. } |
             PatternKind::Slice { .. } |
             PatternKind::Array { .. } |
@@ -146,13 +146,14 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                         lvalue: &Lvalue<'tcx>,
                         test: &Test<'tcx>)
                         -> Vec<BasicBlock> {
+        let scope_id = self.innermost_scope_id();
         match test.kind {
             TestKind::Switch { adt_def } => {
                 let num_enum_variants = self.hir.num_variants(adt_def);
                 let target_blocks: Vec<_> =
                     (0..num_enum_variants).map(|_| self.cfg.start_new_block())
                                           .collect();
-                self.cfg.terminate(block, Terminator::Switch {
+                self.cfg.terminate(block, scope_id, test.span, TerminatorKind::Switch {
                     discr: lvalue.clone(),
                     adt_def: adt_def,
                     targets: target_blocks.clone()
@@ -167,46 +168,103 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                            .map(|_| self.cfg.start_new_block())
                            .chain(Some(otherwise))
                            .collect();
-                self.cfg.terminate(block, Terminator::SwitchInt {
-                    discr: lvalue.clone(),
-                    switch_ty: switch_ty,
-                    values: options.clone(),
-                    targets: targets.clone(),
-                });
+                self.cfg.terminate(block,
+                                   scope_id,
+                                   test.span,
+                                   TerminatorKind::SwitchInt {
+                                       discr: lvalue.clone(),
+                                       switch_ty: switch_ty,
+                                       values: options.clone(),
+                                       targets: targets.clone(),
+                                   });
                 targets
             }
 
-            TestKind::Eq { ref value, ty } => {
-                // call PartialEq::eq(discrim, constant)
-                let constant = self.literal_operand(test.span, ty.clone(), value.clone());
-                let item_ref = self.hir.partial_eq(ty);
-                self.call_comparison_fn(block, test.span, item_ref,
-                                        Operand::Consume(lvalue.clone()), constant)
+            TestKind::Eq { ref value, mut ty } => {
+                let mut val = Operand::Consume(lvalue.clone());
+
+                // If we're using b"..." as a pattern, we need to insert an
+                // unsizing coercion, as the byte string has the type &[u8; N].
+                let expect = if let ConstVal::ByteStr(ref bytes) = *value {
+                    let tcx = self.hir.tcx();
+
+                    // Unsize the lvalue to &[u8], too, if necessary.
+                    if let ty::TyRef(region, mt) = ty.sty {
+                        if let ty::TyArray(_, _) = mt.ty.sty {
+                            ty = tcx.mk_imm_ref(region, tcx.mk_slice(tcx.types.u8));
+                            let val_slice = self.temp(ty);
+                            self.cfg.push_assign(block, scope_id, test.span, &val_slice,
+                                                 Rvalue::Cast(CastKind::Unsize, val, ty));
+                            val = Operand::Consume(val_slice);
+                        }
+                    }
+
+                    assert!(ty.is_slice());
+
+                    let array_ty = tcx.mk_array(tcx.types.u8, bytes.len());
+                    let array_ref = tcx.mk_imm_ref(tcx.mk_region(ty::ReStatic), array_ty);
+                    let array = self.literal_operand(test.span, array_ref, Literal::Value {
+                        value: value.clone()
+                    });
+
+                    let slice = self.temp(ty);
+                    self.cfg.push_assign(block, scope_id, test.span, &slice,
+                                         Rvalue::Cast(CastKind::Unsize, array, ty));
+                    Operand::Consume(slice)
+                } else {
+                    self.literal_operand(test.span, ty, Literal::Value {
+                        value: value.clone()
+                    })
+                };
+
+                // Use PartialEq::eq for &str and &[u8] slices, instead of BinOp::Eq.
+                let fail = self.cfg.start_new_block();
+                if let ty::TyRef(_, mt) = ty.sty {
+                    assert!(ty.is_slice());
+                    let eq_def_id = self.hir.tcx().lang_items.eq_trait().unwrap();
+                    let ty = mt.ty;
+                    let (mty, method) = self.hir.trait_method(eq_def_id, "eq", ty, vec![ty]);
+
+                    let bool_ty = self.hir.bool_ty();
+                    let eq_result = self.temp(bool_ty);
+                    let eq_block = self.cfg.start_new_block();
+                    let cleanup = self.diverge_cleanup();
+                    self.cfg.terminate(block, scope_id, test.span, TerminatorKind::Call {
+                        func: Operand::Constant(Constant {
+                            span: test.span,
+                            ty: mty,
+                            literal: method
+                        }),
+                        args: vec![val, expect],
+                        destination: Some((eq_result.clone(), eq_block)),
+                        cleanup: cleanup,
+                    });
+
+                    // check the result
+                    let block = self.cfg.start_new_block();
+                    self.cfg.terminate(eq_block, scope_id, test.span, TerminatorKind::If {
+                        cond: Operand::Consume(eq_result),
+                        targets: (block, fail),
+                    });
+
+                    vec![block, fail]
+                } else {
+                    let block = self.compare(block, fail, test.span, BinOp::Eq, expect, val);
+                    vec![block, fail]
+                }
             }
 
             TestKind::Range { ref lo, ref hi, ty } => {
-                // Test `v` by computing `PartialOrd::le(lo, v) && PartialOrd::le(v, hi)`.
+                // Test `val` by computing `lo <= val && val <= hi`, using primitive comparisons.
                 let lo = self.literal_operand(test.span, ty.clone(), lo.clone());
                 let hi = self.literal_operand(test.span, ty.clone(), hi.clone());
-                let item_ref = self.hir.partial_le(ty);
+                let val = Operand::Consume(lvalue.clone());
 
-                let lo_blocks = self.call_comparison_fn(block,
-                                                        test.span,
-                                                        item_ref.clone(),
-                                                        lo,
-                                                        Operand::Consume(lvalue.clone()));
+                let fail = self.cfg.start_new_block();
+                let block = self.compare(block, fail, test.span, BinOp::Le, lo, val.clone());
+                let block = self.compare(block, fail, test.span, BinOp::Le, val, hi);
 
-                let hi_blocks = self.call_comparison_fn(lo_blocks[0],
-                                                        test.span,
-                                                        item_ref,
-                                                        Operand::Consume(lvalue.clone()),
-                                                        hi);
-
-                let failure = self.cfg.start_new_block();
-                self.cfg.terminate(lo_blocks[1], Terminator::Goto { target: failure });
-                self.cfg.terminate(hi_blocks[1], Terminator::Goto { target: failure });
-
-                vec![hi_blocks[0], failure]
+                vec![block, fail]
             }
 
             TestKind::Len { len, op } => {
@@ -214,13 +272,15 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 let (actual, result) = (self.temp(usize_ty), self.temp(bool_ty));
 
                 // actual = len(lvalue)
-                self.cfg.push_assign(block, test.span, &actual, Rvalue::Len(lvalue.clone()));
+                self.cfg.push_assign(block, scope_id, test.span,
+                                     &actual, Rvalue::Len(lvalue.clone()));
 
                 // expected = <N>
-                let expected = self.push_usize(block, test.span, len);
+                let expected = self.push_usize(block, scope_id, test.span, len);
 
                 // result = actual == expected OR result = actual < expected
                 self.cfg.push_assign(block,
+                                     scope_id,
                                      test.span,
                                      &result,
                                      Rvalue::BinaryOp(op,
@@ -230,9 +290,9 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 // branch based on result
                 let target_blocks: Vec<_> = vec![self.cfg.start_new_block(),
                                                  self.cfg.start_new_block()];
-                self.cfg.terminate(block, Terminator::If {
+                self.cfg.terminate(block, scope_id, test.span, TerminatorKind::If {
                     cond: Operand::Consume(result),
-                    targets: [target_blocks[0], target_blocks[1]]
+                    targets: (target_blocks[0], target_blocks[1])
                 });
 
                 target_blocks
@@ -240,37 +300,29 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         }
     }
 
-    fn call_comparison_fn(&mut self,
-                          block: BasicBlock,
-                          span: Span,
-                          item_ref: ItemRef<'tcx>,
-                          lvalue1: Operand<'tcx>,
-                          lvalue2: Operand<'tcx>)
-                          -> Vec<BasicBlock> {
-        let target_blocks = vec![self.cfg.start_new_block(), self.cfg.start_new_block()];
-
+    fn compare(&mut self,
+               block: BasicBlock,
+               fail_block: BasicBlock,
+               span: Span,
+               op: BinOp,
+               left: Operand<'tcx>,
+               right: Operand<'tcx>) -> BasicBlock {
         let bool_ty = self.hir.bool_ty();
-        let eq_result = self.temp(bool_ty);
-        let func = self.item_ref_operand(span, item_ref);
-        let call_blocks = [self.cfg.start_new_block(), self.diverge_cleanup()];
-        self.cfg.terminate(block,
-                           Terminator::Call {
-                               data: CallData {
-                                   destination: eq_result.clone(),
-                                   func: func,
-                                   args: vec![lvalue1, lvalue2],
-                               },
-                               targets: call_blocks,
-                           });
+        let result = self.temp(bool_ty);
 
-        // check the result
-        self.cfg.terminate(call_blocks[0],
-                           Terminator::If {
-                               cond: Operand::Consume(eq_result),
-                               targets: [target_blocks[0], target_blocks[1]],
-                           });
+        // result = op(left, right)
+        let scope_id = self.innermost_scope_id();
+        self.cfg.push_assign(block, scope_id, span, &result,
+                             Rvalue::BinaryOp(op, left, right));
 
-        target_blocks
+        // branch based on result
+        let target_block = self.cfg.start_new_block();
+        self.cfg.terminate(block, scope_id, span, TerminatorKind::If {
+            cond: Operand::Consume(result),
+            targets: (target_block, fail_block)
+        });
+
+        target_block
     }
 
     /// Given that we are performing `test` against `test_lvalue`,
@@ -357,7 +409,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
             // things out here, in some cases.
             TestKind::SwitchInt { switch_ty: _, options: _, ref indices } => {
                 match *match_pair.pattern.kind {
-                    PatternKind::Constant { value: Literal::Value { ref value } }
+                    PatternKind::Constant { ref value }
                     if is_switch_ty(match_pair.pattern.ty) => {
                         let index = indices[value];
                         let new_candidate = self.candidate_without_match_pair(match_pair_index,
@@ -371,9 +423,26 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 }
             }
 
-            TestKind::Eq { .. } |
-            TestKind::Range { .. } |
+            // If we are performing a length check, then this
+            // informs slice patterns, but nothing else.
             TestKind::Len { .. } => {
+                let pattern_test = self.test(&match_pair);
+                match *match_pair.pattern.kind {
+                    PatternKind::Slice { .. } if pattern_test.kind == test.kind => {
+                        let mut new_candidate = candidate.clone();
+
+                        // Set up the MatchKind to simplify this like an array.
+                        new_candidate.match_pairs[match_pair_index]
+                                     .slice_len_checked = true;
+                        resulting_candidates[0].push(new_candidate);
+                        true
+                    }
+                    _ => false
+                }
+            }
+
+            TestKind::Eq { .. } |
+            TestKind::Range { .. } => {
                 // These are all binary tests.
                 //
                 // FIXME(#29623) we can be more clever here
@@ -401,6 +470,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                                  .map(|(_, mp)| mp.clone())
                                  .collect();
         Candidate {
+            span: candidate.span,
             match_pairs: other_match_pairs,
             bindings: candidate.bindings.clone(),
             guard: candidate.guard.clone(),
@@ -426,7 +496,8 @@ impl<'a,'tcx> Builder<'a,'tcx> {
             subpatterns.iter()
                        .map(|subpattern| {
                            // e.g., `(x as Variant).0`
-                           let lvalue = downcast_lvalue.clone().field(subpattern.field);
+                           let lvalue = downcast_lvalue.clone().field(subpattern.field,
+                                                                      subpattern.pattern.ty);
                            // e.g., `(x as Variant).0 @ P1`
                            MatchPair::new(lvalue, &subpattern.pattern)
                        });
@@ -441,6 +512,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         let all_match_pairs = consequent_match_pairs.chain(other_match_pairs).collect();
 
         Candidate {
+            span: candidate.span,
             match_pairs: all_match_pairs,
             bindings: candidate.bindings.clone(),
             guard: candidate.guard.clone(),
@@ -449,8 +521,9 @@ impl<'a,'tcx> Builder<'a,'tcx> {
     }
 
     fn error_simplifyable<'pat>(&mut self, match_pair: &MatchPair<'pat, 'tcx>) -> ! {
-        self.hir.span_bug(match_pair.pattern.span,
-                          &format!("simplifyable pattern found: {:?}", match_pair.pattern))
+        span_bug!(match_pair.pattern.span,
+                  "simplifyable pattern found: {:?}",
+                  match_pair.pattern)
     }
 }
 

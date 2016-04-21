@@ -9,15 +9,16 @@
 // except according to those terms.
 
 
-use front::map as ast_map;
-use middle::def_id::{CRATE_DEF_INDEX};
+use dep_graph::DepNode;
+use hir::map as ast_map;
+use hir::def_id::{CRATE_DEF_INDEX};
 use session::{config, Session};
 use syntax::ast::NodeId;
 use syntax::attr;
 use syntax::codemap::Span;
 use syntax::entry::EntryPointType;
-use rustc_front::hir::{Item, ItemFn};
-use rustc_front::intravisit::Visitor;
+use hir::{Item, ItemFn};
+use hir::intravisit::Visitor;
 
 struct EntryContext<'a, 'tcx: 'a> {
     session: &'a Session,
@@ -48,6 +49,8 @@ impl<'a, 'tcx> Visitor<'tcx> for EntryContext<'a, 'tcx> {
 }
 
 pub fn find_entry_point(session: &Session, ast_map: &ast_map::Map) {
+    let _task = ast_map.dep_graph.in_task(DepNode::EntryPoint);
+
     let any_exe = session.crate_types.borrow().iter().any(|ty| {
         *ty == config::CrateTypeExecutable
     });
@@ -146,17 +149,20 @@ fn configure_main(this: &mut EntryContext) {
         this.session.entry_type.set(Some(config::EntryMain));
     } else {
         // No main function
-        this.session.err("main function not found");
+        let mut err = this.session.struct_err("main function not found");
         if !this.non_main_fns.is_empty() {
             // There were some functions named 'main' though. Try to give the user a hint.
-            this.session.note("the main function must be defined at the crate level \
-                               but you have one or more functions named 'main' that are not \
-                               defined at the crate level. Either move the definition or \
-                               attach the `#[main]` attribute to override this behavior.");
+            err.note("the main function must be defined at the crate level \
+                      but you have one or more functions named 'main' that are not \
+                      defined at the crate level. Either move the definition or \
+                      attach the `#[main]` attribute to override this behavior.");
             for &(_, span) in &this.non_main_fns {
-                this.session.span_note(span, "here is a function named 'main'");
+                err.span_note(span, "here is a function named 'main'");
             }
+            err.emit();
             this.session.abort_if_errors();
+        } else {
+            err.emit();
         }
     }
 }

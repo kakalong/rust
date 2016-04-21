@@ -13,27 +13,33 @@
 
 use astconv::AstConv;
 use intrinsics;
-use middle::subst;
-use middle::ty::FnSig;
-use middle::ty::{self, Ty};
-use middle::ty::fold::TypeFolder;
+use rustc::ty::subst::{self, Substs};
+use rustc::ty::FnSig;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::fold::TypeFolder;
 use {CrateCtxt, require_same_types};
 
 use std::collections::{HashMap};
-use syntax::abi;
+use syntax::abi::Abi;
 use syntax::ast;
 use syntax::attr::AttrMetaMethods;
 use syntax::codemap::Span;
 use syntax::parse::token;
 
-use rustc_front::hir;
+use rustc::hir;
 
-fn equate_intrinsic_type<'a, 'tcx>(tcx: &ty::ctxt<'tcx>, it: &hir::ForeignItem,
+fn equate_intrinsic_type<'a, 'tcx>(tcx: &TyCtxt<'tcx>, it: &hir::ForeignItem,
                                    n_tps: usize,
-                                   abi: abi::Abi,
+                                   abi: Abi,
                                    inputs: Vec<ty::Ty<'tcx>>,
                                    output: ty::FnOutput<'tcx>) {
-    let fty = tcx.mk_fn(None, tcx.mk_bare_fn(ty::BareFnTy {
+    let def_id = tcx.map.local_def_id(it.id);
+    let i_ty = tcx.lookup_item_type(def_id);
+
+    let mut substs = Substs::empty();
+    substs.types = i_ty.generics.types.map(|def| tcx.mk_param_from_def(def));
+
+    let fty = tcx.mk_fn_def(def_id, tcx.mk_substs(substs), ty::BareFnTy {
         unsafety: hir::Unsafety::Unsafe,
         abi: abi,
         sig: ty::Binder(FnSig {
@@ -41,8 +47,7 @@ fn equate_intrinsic_type<'a, 'tcx>(tcx: &ty::ctxt<'tcx>, it: &hir::ForeignItem,
             output: output,
             variadic: false,
         }),
-    }));
-    let i_ty = tcx.lookup_item_type(tcx.map.local_def_id(it.id));
+    });
     let i_n_tps = i_ty.generics.types.len(subst::FnSpace);
     if i_n_tps != n_tps {
         span_err!(tcx.sess, it.span, E0094,
@@ -79,10 +84,10 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
 
         //We only care about the operation here
         let (n_tps, inputs, output) = match split[1] {
-            "cxchg" => (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)),
-                                param(ccx, 0),
-                                param(ccx, 0)),
-                        param(ccx, 0)),
+            "cxchg" | "cxchgweak" => (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)),
+                                              param(ccx, 0),
+                                              param(ccx, 0)),
+                                      tcx.mk_tup(vec!(param(ccx, 0), tcx.types.bool))),
             "load" => (1, vec!(tcx.mk_imm_ptr(param(ccx, 0))),
                        param(ccx, 0)),
             "store" => (1, vec!(tcx.mk_mut_ptr(param(ccx, 0)), param(ccx, 0)),
@@ -271,6 +276,8 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
 
             "overflowing_add" | "overflowing_sub" | "overflowing_mul" =>
                 (1, vec![param(ccx, 0), param(ccx, 0)], param(ccx, 0)),
+            "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" =>
+                (1, vec![param(ccx, 0), param(ccx, 0)], param(ccx, 0)),
 
             "return_address" => (0, vec![], tcx.mk_imm_ptr(tcx.types.u8)),
 
@@ -285,15 +292,14 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
                 let mut_u8 = tcx.mk_mut_ptr(tcx.types.u8);
                 let fn_ty = ty::BareFnTy {
                     unsafety: hir::Unsafety::Normal,
-                    abi: abi::Rust,
+                    abi: Abi::Rust,
                     sig: ty::Binder(FnSig {
                         inputs: vec![mut_u8],
                         output: ty::FnOutput::FnConverging(tcx.mk_nil()),
                         variadic: false,
                     }),
                 };
-                let fn_ty = tcx.mk_bare_fn(fn_ty);
-                (0, vec![tcx.mk_fn(None, fn_ty), mut_u8], mut_u8)
+                (0, vec![tcx.mk_fn_ptr(fn_ty), mut_u8, mut_u8], tcx.types.i32)
             }
 
             ref other => {
@@ -308,7 +314,7 @@ pub fn check_intrinsic_type(ccx: &CrateCtxt, it: &hir::ForeignItem) {
         tcx,
         it,
         n_tps,
-        abi::RustIntrinsic,
+        Abi::RustIntrinsic,
         inputs,
         output
         )
@@ -354,7 +360,7 @@ pub fn check_platform_intrinsic_type(ccx: &CrateCtxt,
             }
         }
         _ => {
-            match intrinsics::Intrinsic::find(tcx, &name) {
+            match intrinsics::Intrinsic::find(&name) {
                 Some(intr) => {
                     // this function is a platform specific intrinsic
                     if i_n_tps != 0 {
@@ -398,7 +404,7 @@ pub fn check_platform_intrinsic_type(ccx: &CrateCtxt,
         tcx,
         it,
         n_tps,
-        abi::PlatformIntrinsic,
+        Abi::PlatformIntrinsic,
         inputs,
         ty::FnConverging(output)
         )
@@ -408,7 +414,7 @@ pub fn check_platform_intrinsic_type(ccx: &CrateCtxt,
 // the same, in a kinda-structural way, i.e. `Vector`s have to be simd structs with
 // exactly the right element type
 fn match_intrinsic_type_to_type<'tcx, 'a>(
-        tcx: &ty::ctxt<'tcx>,
+        tcx: &TyCtxt<'tcx>,
         position: &str,
         span: Span,
         structural_to_nominal: &mut HashMap<&'a intrinsics::Type, ty::Ty<'tcx>>,
@@ -429,22 +435,22 @@ fn match_intrinsic_type_to_type<'tcx, 'a>(
         },
         // (The width we pass to LLVM doesn't concern the type checker.)
         Integer(signed, bits, _llvm_width) => match (signed, bits, &t.sty) {
-            (true,  8,  &ty::TyInt(ast::IntTy::TyI8)) |
-            (false, 8,  &ty::TyUint(ast::UintTy::TyU8)) |
-            (true,  16, &ty::TyInt(ast::IntTy::TyI16)) |
-            (false, 16, &ty::TyUint(ast::UintTy::TyU16)) |
-            (true,  32, &ty::TyInt(ast::IntTy::TyI32)) |
-            (false, 32, &ty::TyUint(ast::UintTy::TyU32)) |
-            (true,  64, &ty::TyInt(ast::IntTy::TyI64)) |
-            (false, 64, &ty::TyUint(ast::UintTy::TyU64)) => {},
+            (true,  8,  &ty::TyInt(ast::IntTy::I8)) |
+            (false, 8,  &ty::TyUint(ast::UintTy::U8)) |
+            (true,  16, &ty::TyInt(ast::IntTy::I16)) |
+            (false, 16, &ty::TyUint(ast::UintTy::U16)) |
+            (true,  32, &ty::TyInt(ast::IntTy::I32)) |
+            (false, 32, &ty::TyUint(ast::UintTy::U32)) |
+            (true,  64, &ty::TyInt(ast::IntTy::I64)) |
+            (false, 64, &ty::TyUint(ast::UintTy::U64)) => {},
             _ => simple_error(&format!("`{}`", t),
                               &format!("`{}{n}`",
                                        if signed {"i"} else {"u"},
                                        n = bits)),
         },
         Float(bits) => match (bits, &t.sty) {
-            (32, &ty::TyFloat(ast::FloatTy::TyF32)) |
-            (64, &ty::TyFloat(ast::FloatTy::TyF64)) => {},
+            (32, &ty::TyFloat(ast::FloatTy::F32)) |
+            (64, &ty::TyFloat(ast::FloatTy::F64)) => {},
             _ => simple_error(&format!("`{}`", t),
                               &format!("`f{n}`", n = bits)),
         },

@@ -12,9 +12,10 @@
 // to TreeMap
 
 use core::cmp::Ordering::{self, Less, Greater, Equal};
+use core::cmp::{min, max};
 use core::fmt::Debug;
 use core::fmt;
-use core::iter::{Peekable, Map, FromIterator};
+use core::iter::{Peekable, FromIterator};
 use core::ops::{BitOr, BitAnd, BitXor, Sub};
 
 use borrow::Borrow;
@@ -26,12 +27,47 @@ use Bound;
 
 /// A set based on a B-Tree.
 ///
-/// See BTreeMap's documentation for a detailed discussion of this collection's performance
+/// See [`BTreeMap`]'s documentation for a detailed discussion of this collection's performance
 /// benefits and drawbacks.
 ///
 /// It is a logic error for an item to be modified in such a way that the item's ordering relative
-/// to any other item, as determined by the `Ord` trait, changes while it is in the set. This is
-/// normally only possible through `Cell`, `RefCell`, global state, I/O, or unsafe code.
+/// to any other item, as determined by the [`Ord`] trait, changes while it is in the set. This is
+/// normally only possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
+///
+/// [`BTreeMap`]: struct.BTreeMap.html
+/// [`Ord`]: ../../std/cmp/trait.Ord.html
+/// [`Cell`]: ../../std/cell/struct.Cell.html
+/// [`RefCell`]: ../../std/cell/struct.RefCell.html
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeSet;
+///
+/// // Type inference lets us omit an explicit type signature (which
+/// // would be `BTreeSet<&str>` in this example).
+/// let mut books = BTreeSet::new();
+///
+/// // Add some books.
+/// books.insert("A Dance With Dragons");
+/// books.insert("To Kill a Mockingbird");
+/// books.insert("The Odyssey");
+/// books.insert("The Great Gatsby");
+///
+/// // Check for a specific one.
+/// if !books.contains("The Winds of Winter") {
+///     println!("We have {} books, but The Winds of Winter ain't one.",
+///              books.len());
+/// }
+///
+/// // Remove a book.
+/// books.remove("The Odyssey");
+///
+/// // Iterate over everything.
+/// for book in &books {
+///     println!("{}", book);
+/// }
+/// ```
 #[derive(Clone, Hash, PartialEq, Eq, Ord, PartialOrd)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BTreeSet<T> {
@@ -47,12 +83,12 @@ pub struct Iter<'a, T: 'a> {
 /// An owning iterator over a BTreeSet's items.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<T> {
-    iter: Map<::btree_map::IntoIter<T, ()>, fn((T, ())) -> T>,
+    iter: ::btree_map::IntoIter<T, ()>,
 }
 
 /// An iterator over a sub-range of BTreeSet's items.
 pub struct Range<'a, T: 'a> {
-    iter: Map<::btree_map::Range<'a, T, ()>, fn((&'a T, &'a ())) -> &'a T>,
+    iter: ::btree_map::Range<'a, T, ()>,
 }
 
 /// A lazy iterator producing elements in the set difference (in-order).
@@ -97,18 +133,6 @@ impl<T: Ord> BTreeSet<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new() -> BTreeSet<T> {
         BTreeSet { map: BTreeMap::new() }
-    }
-
-    /// Makes a new BTreeSet with the given B.
-    ///
-    /// B cannot be less than 2.
-    #[unstable(feature = "btree_b",
-               reason = "probably want this to be on the type, eventually",
-               issue = "27795")]
-    #[rustc_deprecated(since = "1.4.0", reason = "niche API")]
-    #[allow(deprecated)]
-    pub fn with_b(b: usize) -> BTreeSet<T> {
-        BTreeSet { map: BTreeMap::with_b(b) }
     }
 }
 
@@ -161,18 +185,13 @@ impl<T: Ord> BTreeSet<T> {
     #[unstable(feature = "btree_range",
                reason = "matches collection reform specification, waiting for dust to settle",
                issue = "27787")]
-    pub fn range<'a, Min: ?Sized + Ord = T, Max: ?Sized + Ord = T>(&'a self,
-                                                                   min: Bound<&Min>,
-                                                                   max: Bound<&Max>)
-                                                                   -> Range<'a, T>
+    pub fn range<'a, Min: ?Sized + Ord, Max: ?Sized + Ord>(&'a self,
+                                                           min: Bound<&Min>,
+                                                           max: Bound<&Max>)
+                                                           -> Range<'a, T>
         where T: Borrow<Min> + Borrow<Max>
     {
-        fn first<A, B>((a, _): (A, B)) -> A {
-            a
-        }
-        let first: fn((&'a T, &'a ())) -> &'a T = first; // coerce to fn pointer
-
-        Range { iter: self.map.range(min, max).map(first) }
+        Range { iter: self.map.range(min, max) }
     }
 }
 
@@ -360,7 +379,7 @@ impl<T: Ord> BTreeSet<T> {
     /// The value may be any borrowed form of the set's value type,
     /// but the ordering on the borrowed form *must* match the
     /// ordering on the value type.
-    #[unstable(feature = "set_recovery", issue = "28050")]
+    #[stable(feature = "set_recovery", since = "1.9.0")]
     pub fn get<Q: ?Sized>(&self, value: &Q) -> Option<&T>
         where T: Borrow<Q>,
               Q: Ord
@@ -460,7 +479,7 @@ impl<T: Ord> BTreeSet<T> {
     ///
     /// If the set did not have a value present, `true` is returned.
     ///
-    /// If the set did have this key present, that value is returned, and the
+    /// If the set did have this key present, `false` is returned, and the
     /// entry is not updated. See the [module-level documentation] for more.
     ///
     /// [module-level documentation]: index.html#insert-and-complex-keys
@@ -483,7 +502,7 @@ impl<T: Ord> BTreeSet<T> {
 
     /// Adds a value to the set, replacing the existing value, if any, that is equal to the given
     /// one. Returns the replaced value.
-    #[unstable(feature = "set_recovery", issue = "28050")]
+    #[stable(feature = "set_recovery", since = "1.9.0")]
     pub fn replace(&mut self, value: T) -> Option<T> {
         Recover::replace(&mut self.map, value)
     }
@@ -519,7 +538,7 @@ impl<T: Ord> BTreeSet<T> {
     /// The value may be any borrowed form of the set's value type,
     /// but the ordering on the borrowed form *must* match the
     /// ordering on the value type.
-    #[unstable(feature = "set_recovery", issue = "28050")]
+    #[stable(feature = "set_recovery", since = "1.9.0")]
     pub fn take<Q: ?Sized>(&mut self, value: &Q) -> Option<T>
         where T: Borrow<Q>,
               Q: Ord
@@ -555,12 +574,7 @@ impl<T> IntoIterator for BTreeSet<T> {
     /// assert_eq!(v, [1, 2, 3, 4]);
     /// ```
     fn into_iter(self) -> IntoIter<T> {
-        fn first<A, B>((a, _): (A, B)) -> A {
-            a
-        }
-        let first: fn((T, ())) -> T = first; // coerce to fn pointer
-
-        IntoIter { iter: self.map.into_iter().map(first) }
+        IntoIter { iter: self.map.into_iter() }
     }
 }
 
@@ -720,7 +734,9 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+    fn len(&self) -> usize { self.iter.len() }
+}
 
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -728,7 +744,7 @@ impl<T> Iterator for IntoIter<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
-        self.iter.next()
+        self.iter.next().map(|(k, _)| k)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
@@ -737,11 +753,13 @@ impl<T> Iterator for IntoIter<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> DoubleEndedIterator for IntoIter<T> {
     fn next_back(&mut self) -> Option<T> {
-        self.iter.next_back()
+        self.iter.next_back().map(|(k, _)| k)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> ExactSizeIterator for IntoIter<T> {}
+impl<T> ExactSizeIterator for IntoIter<T> {
+    fn len(&self) -> usize { self.iter.len() }
+}
 
 
 impl<'a, T> Clone for Range<'a, T> {
@@ -753,12 +771,12 @@ impl<'a, T> Iterator for Range<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<&'a T> {
-        self.iter.next()
+        self.iter.next().map(|(k, _)| k)
     }
 }
 impl<'a, T> DoubleEndedIterator for Range<'a, T> {
     fn next_back(&mut self) -> Option<&'a T> {
-        self.iter.next_back()
+        self.iter.next_back().map(|(k, _)| k)
     }
 }
 
@@ -797,6 +815,12 @@ impl<'a, T: Ord> Iterator for Difference<'a, T> {
             }
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let a_len = self.a.len();
+        let b_len = self.b.len();
+        (a_len.saturating_sub(b_len), Some(a_len))
+    }
 }
 
 impl<'a, T> Clone for SymmetricDifference<'a, T> {
@@ -822,6 +846,10 @@ impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
                 Greater => return self.b.next(),
             }
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.a.len() + self.b.len()))
     }
 }
 
@@ -859,6 +887,10 @@ impl<'a, T: Ord> Iterator for Intersection<'a, T> {
             }
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(min(self.a.len(), self.b.len())))
+    }
 }
 
 impl<'a, T> Clone for Union<'a, T> {
@@ -884,5 +916,11 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
                 Greater => return self.b.next(),
             }
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let a_len = self.a.len();
+        let b_len = self.b.len();
+        (max(a_len, b_len), Some(a_len + b_len))
     }
 }

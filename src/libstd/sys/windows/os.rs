@@ -196,10 +196,10 @@ pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
             return Err(JoinPathsError)
         } else if v.contains(&sep) {
             joined.push(b'"' as u16);
-            joined.push_all(&v[..]);
+            joined.extend_from_slice(&v[..]);
             joined.push(b'"' as u16);
         } else {
-            joined.push_all(&v[..]);
+            joined.extend_from_slice(&v[..]);
         }
     }
 
@@ -239,7 +239,7 @@ pub fn chdir(p: &path::Path) -> io::Result<()> {
 }
 
 pub fn getenv(k: &OsStr) -> io::Result<Option<OsString>> {
-    let k = try!(to_u16s(k));
+    let k = to_u16s(k)?;
     let res = super::fill_utf16_buf(|buf, sz| unsafe {
         c::GetEnvironmentVariableW(k.as_ptr(), buf, sz)
     }, |buf| {
@@ -258,8 +258,8 @@ pub fn getenv(k: &OsStr) -> io::Result<Option<OsString>> {
 }
 
 pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
-    let k = try!(to_u16s(k));
-    let v = try!(to_u16s(v));
+    let k = to_u16s(k)?;
+    let v = to_u16s(v)?;
 
     cvt(unsafe {
         c::SetEnvironmentVariableW(k.as_ptr(), v.as_ptr())
@@ -267,7 +267,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
 }
 
 pub fn unsetenv(n: &OsStr) -> io::Result<()> {
-    let v = try!(to_u16s(n));
+    let v = to_u16s(n)?;
     cvt(unsafe {
         c::SetEnvironmentVariableW(v.as_ptr(), ptr::null())
     }).map(|_| ())
@@ -338,9 +338,9 @@ pub fn home_dir() -> Option<PathBuf> {
         let _handle = Handle::new(token);
         super::fill_utf16_buf(|buf, mut sz| {
             match c::GetUserProfileDirectoryW(token, buf, &mut sz) {
-                0 if c::GetLastError() != 0 => 0,
+                0 if c::GetLastError() != c::ERROR_INSUFFICIENT_BUFFER => 0,
                 0 => sz,
-                n => n as c::DWORD,
+                _ => sz - 1, // sz includes the null terminator
             }
         }, super::os2path).ok()
     })

@@ -117,11 +117,9 @@ pub fn expand_include<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[ast::TokenTree
             while self.p.token != token::Eof {
                 match panictry!(self.p.parse_item()) {
                     Some(item) => ret.push(item),
-                    None => panic!(self.p.span_fatal(
-                        self.p.span,
-                        &format!("expected item, found `{}`",
-                                 self.p.this_token_to_string())
-                    ))
+                    None => panic!(self.p.diagnostic().span_fatal(self.p.span,
+                                                           &format!("expected item, found `{}`",
+                                                                    self.p.this_token_to_string())))
                 }
             }
             Some(ret)
@@ -189,7 +187,7 @@ pub fn expand_include_bytes(cx: &mut ExtCtxt, sp: Span, tts: &[ast::TokenTree])
             let filename = format!("{}", file.display());
             cx.codemap().new_filemap_and_lines(&filename, "");
 
-            base::MacEager::expr(cx.expr_lit(sp, ast::LitByteStr(Rc::new(bytes))))
+            base::MacEager::expr(cx.expr_lit(sp, ast::LitKind::ByteStr(Rc::new(bytes))))
         }
     }
 }

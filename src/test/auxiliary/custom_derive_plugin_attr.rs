@@ -15,6 +15,7 @@
 #![feature(rustc_private)]
 
 extern crate syntax;
+extern crate syntax_ext;
 extern crate rustc;
 extern crate rustc_plugin;
 
@@ -23,11 +24,11 @@ use syntax::attr::AttrMetaMethods;
 use syntax::codemap::Span;
 use syntax::ext::base::{MultiDecorator, ExtCtxt, Annotatable};
 use syntax::ext::build::AstBuilder;
-use syntax::ext::deriving::generic::{cs_fold, TraitDef, MethodDef, combine_substructure};
-use syntax::ext::deriving::generic::{Substructure, Struct, EnumMatching};
-use syntax::ext::deriving::generic::ty::{Literal, LifetimeBounds, Path, borrowed_explicit_self};
 use syntax::parse::token;
 use syntax::ptr::P;
+use syntax_ext::deriving::generic::{cs_fold, TraitDef, MethodDef, combine_substructure};
+use syntax_ext::deriving::generic::{Substructure, Struct, EnumMatching};
+use syntax_ext::deriving::generic::ty::{Literal, LifetimeBounds, Path, borrowed_explicit_self};
 use rustc_plugin::Registry;
 
 #[plugin_registrar]
@@ -72,7 +73,7 @@ fn expand(cx: &mut ExtCtxt,
 fn totalsum_substructure(cx: &mut ExtCtxt, trait_span: Span,
                          substr: &Substructure) -> P<ast::Expr> {
     let fields = match *substr.fields {
-        Struct(ref fs) | EnumMatching(_, _, ref fs) => fs,
+        Struct(_, ref fs) | EnumMatching(_, _, ref fs) => fs,
         _ => cx.span_bug(trait_span, "impossible substructure")
     };
 
@@ -80,7 +81,7 @@ fn totalsum_substructure(cx: &mut ExtCtxt, trait_span: Span,
         if item.attrs.iter().find(|a| a.check_name("ignore")).is_some() {
             acc
         } else {
-            cx.expr_binary(item.span, ast::BiAdd, acc,
+            cx.expr_binary(item.span, ast::BinOpKind::Add, acc,
                            cx.expr_method_call(item.span,
                                                item.self_.clone(),
                                                substr.method_ident,

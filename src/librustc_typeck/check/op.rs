@@ -18,12 +18,11 @@ use super::{
     method,
     FnCtxt,
 };
-use middle::def_id::DefId;
-use middle::ty::{Ty, HasTypeFlags, PreferMutLvalue};
+use hir::def_id::DefId;
+use rustc::ty::{Ty, TypeFoldable, PreferMutLvalue};
 use syntax::ast;
 use syntax::parse::token;
-use rustc_front::hir;
-use rustc_front::util as hir_util;
+use rustc::hir;
 
 /// Check a `a <op>= b`
 pub fn check_binop_assign<'a,'tcx>(fcx: &FnCtxt<'a,'tcx>,
@@ -184,13 +183,13 @@ fn check_overloaded_binop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                 if let IsAssign::Yes = is_assign {
                     span_err!(fcx.tcx().sess, lhs_expr.span, E0368,
                               "binary assignment operation `{}=` cannot be applied to type `{}`",
-                              hir_util::binop_to_string(op.node),
+                              op.node.as_str(),
                               lhs_ty);
                 } else {
-                    span_err!(fcx.tcx().sess, lhs_expr.span, E0369,
-                              "binary operation `{}` cannot be applied to type `{}`",
-                              hir_util::binop_to_string(op.node),
-                              lhs_ty);
+                    let mut err = struct_span_err!(fcx.tcx().sess, lhs_expr.span, E0369,
+                        "binary operation `{}` cannot be applied to type `{}`",
+                        op.node.as_str(),
+                        lhs_ty);
                     let missing_trait = match op.node {
                         hir::BiAdd    => Some("std::ops::Add"),
                         hir::BiSub    => Some("std::ops::Sub"),
@@ -208,10 +207,11 @@ fn check_overloaded_binop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                     };
 
                     if let Some(missing_trait) = missing_trait {
-                        span_note!(fcx.tcx().sess, lhs_expr.span,
+                        span_note!(&mut err, lhs_expr.span,
                                    "an implementation of `{}` might be missing for `{}`",
                                     missing_trait, lhs_ty);
                     }
+                    err.emit();
                 }
             }
             fcx.tcx().types.err
@@ -234,7 +234,7 @@ pub fn check_user_unop<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                                  op: hir::UnOp)
                                  -> Ty<'tcx>
 {
-    assert!(hir_util::is_by_value_unop(op));
+    assert!(op.is_by_value());
     match lookup_op_method(fcx, ex, operand_ty, vec![],
                            token::intern(mname), trait_did,
                            operand_expr) {
@@ -269,8 +269,9 @@ fn name_and_trait_def_id(fcx: &FnCtxt,
             hir::BiShr => ("shr_assign", lang.shr_assign_trait()),
             hir::BiLt | hir::BiLe | hir::BiGe | hir::BiGt | hir::BiEq | hir::BiNe | hir::BiAnd |
             hir::BiOr => {
-                fcx.tcx().sess.span_bug(op.span, &format!("impossible assignment operation: {}=",
-                                        hir_util::binop_to_string(op.node)))
+                span_bug!(op.span,
+                          "impossible assignment operation: {}=",
+                          op.node.as_str())
             }
         }
     } else {
@@ -292,7 +293,7 @@ fn name_and_trait_def_id(fcx: &FnCtxt,
             hir::BiEq => ("eq", lang.eq_trait()),
             hir::BiNe => ("ne", lang.eq_trait()),
             hir::BiAnd | hir::BiOr => {
-                fcx.tcx().sess.span_bug(op.span, "&& and || are not overloadable")
+                span_bug!(op.span, "&& and || are not overloadable")
             }
         }
     }
@@ -334,7 +335,7 @@ fn lookup_op_method<'a, 'tcx>(fcx: &'a FnCtxt<'a, 'tcx>,
             let method_ty = method.ty;
 
             // HACK(eddyb) Fully qualified path to work around a resolve bug.
-            let method_call = ::middle::ty::MethodCall::expr(expr.id);
+            let method_call = ::rustc::ty::MethodCall::expr(expr.id);
             fcx.inh.tables.borrow_mut().method_map.insert(method_call, method);
 
             // extract return type for method; all late bound regions

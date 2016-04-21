@@ -19,19 +19,22 @@
 use borrowck::*;
 use borrowck::move_data::MoveData;
 use rustc::middle::expr_use_visitor as euv;
-use rustc::middle::infer;
+use rustc::infer;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
-use rustc::middle::ty;
+use rustc::ty::{self, TyCtxt};
+use rustc::traits::ProjectionMode;
 
 use syntax::ast;
 use syntax::codemap::Span;
 use syntax::ast::NodeId;
-use rustc_front::hir;
-use rustc_front::hir::{Expr, FnDecl, Block, Pat};
-use rustc_front::intravisit;
-use rustc_front::intravisit::Visitor;
+use rustc::hir;
+use rustc::hir::Expr;
+use rustc::hir::intravisit;
+use rustc::hir::intravisit::Visitor;
+
+use self::restrictions::RestrictionResult;
 
 mod lifetime;
 mod restrictions;
@@ -53,7 +56,10 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     };
 
     let param_env = ty::ParameterEnvironment::for_item(bccx.tcx, fn_id);
-    let infcx = infer::new_infer_ctxt(bccx.tcx, &bccx.tcx.tables, Some(param_env), false);
+    let infcx = infer::new_infer_ctxt(bccx.tcx,
+                                      &bccx.tcx.tables,
+                                      Some(param_env),
+                                      ProjectionMode::AnyFinal);
     {
         let mut euv = euv::ExprUseVisitor::new(&mut glcx, &infcx);
         euv.walk_fn(decl, body);
@@ -251,7 +257,7 @@ fn check_mutability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
-    pub fn tcx(&self) -> &'a ty::ctxt<'tcx> { self.bccx.tcx }
+    pub fn tcx(&self) -> &'a TyCtxt<'tcx> { self.bccx.tcx }
 
     /// Guarantees that `cmt` is assignable, or reports an error.
     fn guarantee_assignment_valid(&mut self,
@@ -354,12 +360,12 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
 
         // Create the loan record (if needed).
         let loan = match restr {
-            restrictions::Safe => {
+            RestrictionResult::Safe => {
                 // No restrictions---no loan record necessary
                 return;
             }
 
-            restrictions::SafeIf(loan_path, restricted_paths) => {
+            RestrictionResult::SafeIf(loan_path, restricted_paths) => {
                 let loan_scope = match loan_region {
                     ty::ReScope(scope) => scope,
 
@@ -372,10 +378,10 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                     ty::ReEarlyBound(..) |
                     ty::ReVar(..) |
                     ty::ReSkolemized(..) => {
-                        self.tcx().sess.span_bug(
+                        span_bug!(
                             cmt.span,
-                            &format!("invalid borrow lifetime: {:?}",
-                                    loan_region));
+                            "invalid borrow lifetime: {:?}",
+                            loan_region);
                     }
                 };
                 debug!("loan_scope = {:?}", loan_scope);
@@ -384,11 +390,11 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                 let gen_scope = self.compute_gen_scope(borrow_scope, loan_scope);
                 debug!("gen_scope = {:?}", gen_scope);
 
-                let kill_scope = self.compute_kill_scope(loan_scope, &*loan_path);
+                let kill_scope = self.compute_kill_scope(loan_scope, &loan_path);
                 debug!("kill_scope = {:?}", kill_scope);
 
                 if req_kind == ty::MutBorrow {
-                    self.mark_loan_path_as_mutated(&*loan_path);
+                    self.mark_loan_path_as_mutated(&loan_path);
                 }
 
                 Loan {
@@ -450,7 +456,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
             LpDowncast(ref base, _) |
             LpExtend(ref base, mc::McInherited, _) |
             LpExtend(ref base, mc::McDeclared, _) => {
-                self.mark_loan_path_as_mutated(&**base);
+                self.mark_loan_path_as_mutated(&base);
             }
             LpExtend(_, mc::McImmutable, _) => {
                 // Nothing to do.
@@ -523,9 +529,12 @@ struct StaticInitializerCtxt<'a, 'tcx: 'a> {
 impl<'a, 'tcx, 'v> Visitor<'v> for StaticInitializerCtxt<'a, 'tcx> {
     fn visit_expr(&mut self, ex: &Expr) {
         if let hir::ExprAddrOf(mutbl, ref base) = ex.node {
-            let infcx = infer::new_infer_ctxt(self.bccx.tcx, &self.bccx.tcx.tables, None, false);
+            let infcx = infer::new_infer_ctxt(self.bccx.tcx,
+                                              &self.bccx.tcx.tables,
+                                              None,
+                                              ProjectionMode::AnyFinal);
             let mc = mc::MemCategorizationContext::new(&infcx);
-            let base_cmt = mc.cat_expr(&**base).unwrap();
+            let base_cmt = mc.cat_expr(&base).unwrap();
             let borrow_kind = ty::BorrowKind::from_mutbl(mutbl);
             // Check that we don't allow borrows of unsafe static items.
             if check_aliasability(self.bccx, ex.span,

@@ -15,6 +15,7 @@ use build::expr::category::{Category, RvalueFunc};
 use build::scope::LoopScope;
 use hair::*;
 use rustc::middle::region::CodeExtent;
+use rustc::ty;
 use rustc::mir::repr::*;
 use syntax::codemap::Span;
 
@@ -35,10 +36,11 @@ impl<'a,'tcx> Builder<'a,'tcx> {
         // just use the name `this` uniformly
         let this = self;
         let expr_span = expr.span;
+        let scope_id = this.innermost_scope_id();
 
         match expr.kind {
             ExprKind::Scope { extent, value } => {
-                this.in_scope(extent, block, |this| this.into(destination, block, value))
+                this.in_scope(extent, block, |this, _| this.into(destination, block, value))
             }
             ExprKind::Block { body: ast_block } => {
                 this.ast_block(destination, block, ast_block)
@@ -51,17 +53,31 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
                 let mut then_block = this.cfg.start_new_block();
                 let mut else_block = this.cfg.start_new_block();
-                this.cfg.terminate(block, Terminator::If {
+                this.cfg.terminate(block, scope_id, expr_span, TerminatorKind::If {
                     cond: operand,
-                    targets: [then_block, else_block]
+                    targets: (then_block, else_block)
                 });
 
                 unpack!(then_block = this.into(destination, then_block, then_expr));
-                unpack!(else_block = this.into(destination, else_block, else_expr));
+                else_block = if let Some(else_expr) = else_expr {
+                    unpack!(this.into(destination, else_block, else_expr))
+                } else {
+                    // Body of the `if` expression without an `else` clause must return `()`, thus
+                    // we implicitly generate a `else {}` if it is not specified.
+                    let scope_id = this.innermost_scope_id();
+                    this.cfg.push_assign_unit(else_block, scope_id, expr_span, destination);
+                    else_block
+                };
 
                 let join_block = this.cfg.start_new_block();
-                this.cfg.terminate(then_block, Terminator::Goto { target: join_block });
-                this.cfg.terminate(else_block, Terminator::Goto { target: join_block });
+                this.cfg.terminate(then_block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::Goto { target: join_block });
+                this.cfg.terminate(else_block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::Goto { target: join_block });
 
                 join_block.unit()
             }
@@ -84,19 +100,22 @@ impl<'a,'tcx> Builder<'a,'tcx> {
 
                 let lhs = unpack!(block = this.as_operand(block, lhs));
                 let blocks = match op {
-                    LogicalOp::And => [else_block, false_block],
-                    LogicalOp::Or => [true_block, else_block],
+                    LogicalOp::And => (else_block, false_block),
+                    LogicalOp::Or => (true_block, else_block),
                 };
-                this.cfg.terminate(block, Terminator::If { cond: lhs, targets: blocks });
+                this.cfg.terminate(block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::If { cond: lhs, targets: blocks });
 
                 let rhs = unpack!(else_block = this.as_operand(else_block, rhs));
-                this.cfg.terminate(else_block, Terminator::If {
+                this.cfg.terminate(else_block, scope_id, expr_span, TerminatorKind::If {
                     cond: rhs,
-                    targets: [true_block, false_block]
+                    targets: (true_block, false_block)
                 });
 
                 this.cfg.push_assign_constant(
-                    true_block, expr_span, destination,
+                    true_block, scope_id, expr_span, destination,
                     Constant {
                         span: expr_span,
                         ty: this.hir.bool_ty(),
@@ -104,15 +123,21 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                     });
 
                 this.cfg.push_assign_constant(
-                    false_block, expr_span, destination,
+                    false_block, scope_id, expr_span, destination,
                     Constant {
                         span: expr_span,
                         ty: this.hir.bool_ty(),
                         literal: this.hir.false_literal(),
                     });
 
-                this.cfg.terminate(true_block, Terminator::Goto { target: join_block });
-                this.cfg.terminate(false_block, Terminator::Goto { target: join_block });
+                this.cfg.terminate(true_block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::Goto { target: join_block });
+                this.cfg.terminate(false_block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::Goto { target: join_block });
 
                 join_block.unit()
             }
@@ -136,42 +161,62 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 let exit_block = this.cfg.start_new_block();
 
                 // start the loop
-                this.cfg.terminate(block, Terminator::Goto { target: loop_block });
+                this.cfg.terminate(block,
+                                   scope_id,
+                                   expr_span,
+                                   TerminatorKind::Goto { target: loop_block });
 
-                this.in_loop_scope(loop_block, exit_block, |this| {
+                let might_break = this.in_loop_scope(loop_block, exit_block, move |this| {
                     // conduct the test, if necessary
                     let body_block;
-                    let opt_cond_expr = opt_cond_expr; // FIXME rustc bug
                     if let Some(cond_expr) = opt_cond_expr {
+                        // This loop has a condition, ergo its exit_block is reachable.
+                        this.find_loop_scope(expr_span, None).might_break = true;
+
                         let loop_block_end;
                         let cond = unpack!(loop_block_end = this.as_operand(loop_block, cond_expr));
                         body_block = this.cfg.start_new_block();
                         this.cfg.terminate(loop_block_end,
-                                           Terminator::If {
+                                           scope_id,
+                                           expr_span,
+                                           TerminatorKind::If {
                                                cond: cond,
-                                               targets: [body_block, exit_block]
+                                               targets: (body_block, exit_block)
                                            });
                     } else {
                         body_block = loop_block;
                     }
 
-                    // execute the body, branching back to the test
-                    let unit_temp = this.unit_temp.clone();
-                    let body_block_end = unpack!(this.into(&unit_temp, body_block, body));
-                    this.cfg.terminate(body_block_end, Terminator::Goto { target: loop_block });
-
-                    // final point is exit_block
-                    exit_block.unit()
-                })
+                    // The “return” value of the loop body must always be an unit, but we cannot
+                    // reuse that as a “return” value of the whole loop expressions, because some
+                    // loops are diverging (e.g. `loop {}`). Thus, we introduce a unit temporary as
+                    // the destination for the loop body and assign the loop’s own “return” value
+                    // immediately after the iteration is finished.
+                    let tmp = this.get_unit_temp();
+                    // Execute the body, branching back to the test.
+                    let body_block_end = unpack!(this.into(&tmp, body_block, body));
+                    this.cfg.terminate(body_block_end,
+                                       scope_id,
+                                       expr_span,
+                                       TerminatorKind::Goto { target: loop_block });
+                });
+                // If the loop may reach its exit_block, we assign an empty tuple to the
+                // destination to keep the MIR well-formed.
+                if might_break {
+                    this.cfg.push_assign_unit(exit_block, scope_id, expr_span, destination);
+                }
+                exit_block.unit()
             }
             ExprKind::Assign { lhs, rhs } => {
                 // Note: we evaluate assignments right-to-left. This
                 // is better for borrowck interaction with overloaded
                 // operators like x[j] = x[i].
+                let lhs = this.hir.mirror(lhs);
+                let lhs_span = lhs.span;
                 let rhs = unpack!(block = this.as_operand(block, rhs));
                 let lhs = unpack!(block = this.as_lvalue(block, lhs));
-                this.cfg.push_drop(block, expr_span, DropKind::Deep, &lhs);
-                this.cfg.push_assign(block, expr_span, &lhs, Rvalue::Use(rhs));
+                unpack!(block = this.build_drop(block, lhs_span, lhs.clone()));
+                this.cfg.push_assign(block, scope_id, expr_span, &lhs, Rvalue::Use(rhs));
                 block.unit()
             }
             ExprKind::AssignOp { op, lhs, rhs } => {
@@ -190,7 +235,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 // we don't have to drop prior contents or anything
                 // because AssignOp is only legal for Copy types
                 // (overloaded ops should be desugared into a call).
-                this.cfg.push_assign(block, expr_span, &lhs,
+                this.cfg.push_assign(block, scope_id, expr_span, &lhs,
                                      Rvalue::BinaryOp(op,
                                                       Operand::Consume(lhs.clone()),
                                                       rhs));
@@ -202,31 +247,49 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                                        |loop_scope| loop_scope.continue_block)
             }
             ExprKind::Break { label } => {
-                this.break_or_continue(expr_span, label, block, |loop_scope| loop_scope.break_block)
+                this.break_or_continue(expr_span, label, block, |loop_scope| {
+                    loop_scope.might_break = true;
+                    loop_scope.break_block
+                })
             }
             ExprKind::Return { value } => {
-                unpack!(block = this.into(&Lvalue::ReturnPointer, block, value));
-                let extent = this.extent_of_outermost_scope();
+                block = match value {
+                    Some(value) => unpack!(this.into(&Lvalue::ReturnPointer, block, value)),
+                    None => {
+                        this.cfg.push_assign_unit(block, scope_id,
+                                                  expr_span, &Lvalue::ReturnPointer);
+                        block
+                    }
+                };
+                let extent = this.extent_of_return_scope();
                 this.exit_scope(expr_span, extent, block, END_BLOCK);
                 this.cfg.start_new_block().unit()
             }
-            ExprKind::Call { fun, args } => {
+            ExprKind::Call { ty, fun, args } => {
+                let diverges = match ty.sty {
+                    ty::TyFnDef(_, _, ref f) | ty::TyFnPtr(ref f) => {
+                        f.sig.0.output.diverges()
+                    }
+                    _ => false
+                };
                 let fun = unpack!(block = this.as_operand(block, fun));
                 let args: Vec<_> =
                     args.into_iter()
                         .map(|arg| unpack!(block = this.as_operand(block, arg)))
                         .collect();
+
                 let success = this.cfg.start_new_block();
-                let panic = this.diverge_cleanup();
-                this.cfg.terminate(block,
-                                   Terminator::Call {
-                                       data: CallData {
-                                           destination: destination.clone(),
-                                           func: fun,
-                                           args: args,
-                                       },
-                                       targets: [success, panic],
-                                   });
+                let cleanup = this.diverge_cleanup();
+                this.cfg.terminate(block, scope_id, expr_span, TerminatorKind::Call {
+                    func: fun,
+                    args: args,
+                    cleanup: cleanup,
+                    destination: if diverges {
+                        None
+                    } else {
+                        Some ((destination.clone(), success))
+                    }
+                });
                 success.unit()
             }
 
@@ -258,7 +321,7 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 });
 
                 let rvalue = unpack!(block = this.as_rvalue(block, expr));
-                this.cfg.push_assign(block, expr_span, destination, rvalue);
+                this.cfg.push_assign(block, scope_id, expr_span, destination, rvalue);
                 block.unit()
             }
         }
@@ -270,11 +333,13 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                             block: BasicBlock,
                             exit_selector: F)
                             -> BlockAnd<()>
-        where F: FnOnce(&LoopScope) -> BasicBlock
+        where F: FnOnce(&mut LoopScope) -> BasicBlock
     {
-        let loop_scope = self.find_loop_scope(span, label);
-        let exit_block = exit_selector(&loop_scope);
-        self.exit_scope(span, loop_scope.extent, block, exit_block);
+        let (exit_block, extent) = {
+            let loop_scope = self.find_loop_scope(span, label);
+            (exit_selector(loop_scope), loop_scope.extent)
+        };
+        self.exit_scope(span, extent, block, exit_block);
         self.cfg.start_new_block().unit()
     }
 }

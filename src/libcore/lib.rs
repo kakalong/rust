@@ -23,12 +23,6 @@
 //! nor does it provide concurrency or I/O. These things require
 //! platform integration, and this library is platform-agnostic.
 //!
-//! *It is not recommended to use the core library*. The stable
-//! functionality of libcore is reexported from the
-//! [standard library](../std/index.html). The composition of this library is
-//! subject to change over time; only the interface exposed through libstd is
-//! intended to be stable.
-//!
 //! # How to use the core library
 //!
 // FIXME: Fill me in with more detail when the interface settles
@@ -49,33 +43,29 @@
 // Since libcore defines many fundamental lang items, all tests live in a
 // separate crate, libcoretest, to avoid bizarre issues.
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "core"]
-#![unstable(feature = "core",
-            reason = "the libcore library has not yet been scrutinized for \
-                      stabilization in terms of structure and naming",
-            issue = "27701")]
-#![cfg_attr(stage0, staged_api)]
+#![stable(feature = "core", since = "1.6.0")]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
-       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
-#![doc(test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
+       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
+       test(no_crate_inject, attr(deny(warnings))),
+       test(attr(allow(dead_code, deprecated, unused_variables, unused_mut))))]
 
 #![no_core]
 #![deny(missing_docs)]
+#![deny(missing_debug_implementations)]
+#![cfg_attr(not(stage0), deny(warnings))]
 
-#![cfg_attr(stage0, feature(rustc_attrs))]
-#![cfg_attr(stage0, allow(unused_attributes))]
 #![feature(allow_internal_unstable)]
 #![feature(associated_type_defaults)]
 #![feature(concat_idents)]
 #![feature(const_fn)]
 #![feature(custom_attribute)]
 #![feature(fundamental)]
+#![feature(inclusive_range_syntax)]
 #![feature(intrinsics)]
 #![feature(lang_items)]
 #![feature(no_core)]
@@ -83,16 +73,15 @@
 #![feature(optin_builtin_traits)]
 #![feature(reflect)]
 #![feature(unwind_attributes)]
-#![cfg_attr(stage0, feature(simd))]
-#![cfg_attr(not(stage0), feature(repr_simd, platform_intrinsics))]
+#![feature(repr_simd, platform_intrinsics)]
+#![feature(rustc_attrs)]
+#![feature(specialization)]
 #![feature(staged_api)]
 #![feature(unboxed_closures)]
+#![feature(question_mark)]
 
 #[macro_use]
 mod macros;
-
-#[macro_use]
-mod cmp_macros;
 
 #[path = "num/float_macros.rs"]
 #[macro_use]
@@ -157,12 +146,6 @@ pub mod iter;
 pub mod option;
 pub mod raw;
 pub mod result;
-
-#[cfg(stage0)]
-#[path = "simd_old.rs"]
-pub mod simd;
-#[cfg(not(stage0))]
-pub mod simd;
 
 pub mod slice;
 pub mod str;

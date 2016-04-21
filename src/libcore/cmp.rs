@@ -14,12 +14,26 @@
 //! by the compiler to implement comparison operators. Rust programs may
 //! implement `PartialOrd` to overload the `<`, `<=`, `>`, and `>=` operators,
 //! and may implement `PartialEq` to overload the `==` and `!=` operators.
+//!
+//! # Examples
+//!
+//! ```
+//! let x: u32 = 0;
+//! let y: u32 = 1;
+//!
+//! // these two lines are equivalent
+//! assert_eq!(x < y, true);
+//! assert_eq!(x.lt(&y), true);
+//!
+//! // these two lines are also equivalent
+//! assert_eq!(x == y, false);
+//! assert_eq!(x.eq(&y), false);
+//! ```
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use self::Ordering::*;
 
-use mem;
 use marker::Sized;
 use option::Option::{self, Some};
 
@@ -45,6 +59,16 @@ use option::Option::{self, Some};
 /// only if `a != b`.
 ///
 /// This trait can be used with `#[derive]`.
+///
+/// # Examples
+///
+/// ```
+/// let x: u32 = 0;
+/// let y: u32 = 1;
+///
+/// assert_eq!(x == y, false);
+/// assert_eq!(x.eq(&y), false);
+/// ```
 #[lang = "eq"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait PartialEq<Rhs: ?Sized = Self> {
@@ -104,7 +128,7 @@ pub trait Eq: PartialEq<Self> {
 /// let result = 2.cmp(&1);
 /// assert_eq!(Ordering::Greater, result);
 /// ```
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Ordering {
     /// An ordering where a compared value is less [than another].
@@ -119,10 +143,6 @@ pub enum Ordering {
 }
 
 impl Ordering {
-    unsafe fn from_i8_unchecked(v: i8) -> Ordering {
-        mem::transmute(v)
-    }
-
     /// Reverse the `Ordering`.
     ///
     /// * `Less` becomes `Greater`.
@@ -155,14 +175,10 @@ impl Ordering {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn reverse(self) -> Ordering {
-        unsafe {
-            // this compiles really nicely (to a single instruction);
-            // an explicit match has a pile of branches and
-            // comparisons.
-            //
-            // NB. it is safe because of the explicit discriminants
-            // given above.
-            Ordering::from_i8_unchecked(-(self as i8))
+        match self {
+            Less => Greater,
+            Equal => Equal,
+            Greater => Less,
         }
     }
 }
@@ -174,9 +190,8 @@ impl Ordering {
 /// - total and antisymmetric: exactly one of `a < b`, `a == b` or `a > b` is true; and
 /// - transitive, `a < b` and `b < c` implies `a < c`. The same must hold for both `==` and `>`.
 ///
-/// When this trait is `derive`d, it produces a lexicographic ordering.
-///
-/// This trait can be used with `#[derive]`.
+/// This trait can be used with `#[derive]`. When `derive`d, it will produce a lexicographic
+/// ordering based on the top-to-bottom declaration order of the struct's members.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Ord: Eq + PartialOrd<Self> {
     /// This method returns an `Ordering` between `self` and `other`.
@@ -234,7 +249,18 @@ impl PartialOrd for Ordering {
 /// total order. For example, for floating point numbers, `NaN < 0 == false` and `NaN >= 0 ==
 /// false` (cf. IEEE 754-2008 section 5.11).
 ///
-/// This trait can be used with `#[derive]`.
+/// This trait can be used with `#[derive]`. When `derive`d, it will produce an ordering
+/// based on the top-to-bottom declaration order of the struct's members.
+///
+/// # Examples
+///
+/// ```
+/// let x : u32 = 0;
+/// let y : u32 = 1;
+///
+/// assert_eq!(x < y, true);
+/// assert_eq!(x.lt(&y), true);
+/// ```
 #[lang = "ord"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait PartialOrd<Rhs: ?Sized = Self>: PartialEq<Rhs> {

@@ -17,6 +17,7 @@
 *.elc
 *.epub
 *.exe
+*.pdb
 *.fn
 *.html
 *.kdev4
@@ -77,6 +78,7 @@
 /stage3/
 /test/
 /tmp/
+/obj/
 TAGS
 TAGS.emacs
 TAGS.vi
@@ -93,3 +95,4 @@ tmp.*.rs
 version.md
 version.ml
 version.texi
+/target

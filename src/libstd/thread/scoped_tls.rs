@@ -41,6 +41,7 @@
 //! ```
 
 #![unstable(feature = "thread_local_internals", issue = "0")]
+#![allow(deprecated)]
 
 #[doc(hidden)]
 pub use self::imp::KeyInner as __KeyInner;
@@ -56,6 +57,8 @@ pub use self::imp::KeyInner as __KeyInner;
            reason = "scoped TLS has yet to have wide enough use to fully consider \
                      stabilizing its interface",
            issue = "27715")]
+#[rustc_deprecated(since = "1.8.0",
+                   reason = "hasn't proven itself over LocalKey")]
 pub struct ScopedKey<T:'static> { inner: fn() -> &'static imp::KeyInner<T> }
 
 /// Declare a new scoped thread local storage key.
@@ -68,6 +71,8 @@ pub struct ScopedKey<T:'static> { inner: fn() -> &'static imp::KeyInner<T> }
 #[unstable(feature = "thread_local_internals",
            reason = "should not be necessary",
            issue = "0")]
+#[rustc_deprecated(since = "1.8.0",
+                   reason = "hasn't proven itself over LocalKey")]
 #[macro_export]
 #[allow_internal_unstable]
 macro_rules! scoped_thread_local {
@@ -85,34 +90,13 @@ macro_rules! scoped_thread_local {
 #[unstable(feature = "thread_local_internals",
            reason = "should not be necessary",
            issue = "0")]
+#[rustc_deprecated(since = "1.8.0",
+                   reason = "hasn't proven itself over LocalKey")]
 #[macro_export]
 #[allow_internal_unstable]
-#[cfg(no_elf_tls)]
 macro_rules! __scoped_thread_local_inner {
     ($t:ty) => {{
-        static _KEY: $crate::thread::__ScopedKeyInner<$t> =
-            $crate::thread::__ScopedKeyInner::new();
-        fn _getit() -> &'static $crate::thread::__ScopedKeyInner<$t> { &_KEY }
-        $crate::thread::ScopedKey::new(_getit)
-    }}
-}
-
-#[doc(hidden)]
-#[unstable(feature = "thread_local_internals",
-           reason = "should not be necessary",
-           issue = "0")]
-#[macro_export]
-#[allow_internal_unstable]
-#[cfg(not(no_elf_tls))]
-macro_rules! __scoped_thread_local_inner {
-    ($t:ty) => {{
-        #[cfg_attr(not(any(windows,
-                           target_os = "android",
-                           target_os = "ios",
-                           target_os = "netbsd",
-                           target_os = "openbsd",
-                           target_arch = "aarch64")),
-                   thread_local)]
+        #[cfg_attr(target_thread_local, thread_local)]
         static _KEY: $crate::thread::__ScopedKeyInner<$t> =
             $crate::thread::__ScopedKeyInner::new();
         fn _getit() -> &'static $crate::thread::__ScopedKeyInner<$t> { &_KEY }
@@ -124,6 +108,8 @@ macro_rules! __scoped_thread_local_inner {
            reason = "scoped TLS has yet to have wide enough use to fully consider \
                      stabilizing its interface",
            issue = "27715")]
+#[rustc_deprecated(since = "1.8.0",
+                   reason = "hasn't proven itself over LocalKey")]
 impl<T> ScopedKey<T> {
     #[doc(hidden)]
     pub const fn new(inner: fn() -> &'static imp::KeyInner<T>) -> ScopedKey<T> {
@@ -221,13 +207,7 @@ impl<T> ScopedKey<T> {
     }
 }
 
-#[cfg(not(any(windows,
-              target_os = "android",
-              target_os = "ios",
-              target_os = "netbsd",
-              target_os = "openbsd",
-              target_arch = "aarch64",
-              no_elf_tls)))]
+#[cfg(target_thread_local)]
 #[doc(hidden)]
 mod imp {
     use cell::Cell;
@@ -246,13 +226,7 @@ mod imp {
     }
 }
 
-#[cfg(any(windows,
-          target_os = "android",
-          target_os = "ios",
-          target_os = "netbsd",
-          target_os = "openbsd",
-          target_arch = "aarch64",
-          no_elf_tls))]
+#[cfg(not(target_thread_local))]
 #[doc(hidden)]
 mod imp {
     use cell::Cell;

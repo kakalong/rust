@@ -16,15 +16,16 @@
 
 #![allow(non_camel_case_types)]
 
-use rustc_front::hir;
+use rustc::hir;
 
-use middle::def_id::{DefId, DefIndex};
+use rustc::hir::def_id::{DefId, DefIndex};
 use middle::region;
-use middle::subst;
-use middle::subst::VecPerParamSpace;
-use middle::ty::{self, ToPredicate, Ty, HasTypeFlags};
+use rustc::ty::subst;
+use rustc::ty::subst::VecPerParamSpace;
+use rustc::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable};
 
 use rbml;
+use rbml::leb128;
 use std::str;
 use syntax::abi;
 use syntax::ast;
@@ -40,12 +41,12 @@ pub struct TyDecoder<'a, 'tcx: 'a> {
     data: &'a [u8],
     krate: ast::CrateNum,
     pos: usize,
-    tcx: &'a ty::ctxt<'tcx>,
+    tcx: &'a TyCtxt<'tcx>,
     conv_def_id: DefIdConvert<'a>,
 }
 
 impl<'a,'tcx> TyDecoder<'a,'tcx> {
-    pub fn with_doc(tcx: &'a ty::ctxt<'tcx>,
+    pub fn with_doc(tcx: &'a TyCtxt<'tcx>,
                     crate_num: ast::CrateNum,
                     doc: rbml::Doc<'a>,
                     conv: DefIdConvert<'a>)
@@ -56,7 +57,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
     pub fn new(data: &'a [u8],
                crate_num: ast::CrateNum,
                pos: usize,
-               tcx: &'a ty::ctxt<'tcx>,
+               tcx: &'a TyCtxt<'tcx>,
                conv: DefIdConvert<'a>)
                -> TyDecoder<'a, 'tcx> {
         TyDecoder {
@@ -66,6 +67,10 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             tcx: tcx,
             conv_def_id: conv,
         }
+    }
+
+    pub fn position(&self) -> usize {
+        self.pos
     }
 
     fn peek(&self) -> char {
@@ -99,9 +104,10 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
     }
 
     fn parse_vuint(&mut self) -> usize {
-        let res = rbml::reader::vuint_at(self.data, self.pos).unwrap();
-        self.pos = res.next;
-        res.val
+        let (value, bytes_read) = leb128::read_unsigned_leb128(self.data,
+                                                               self.pos);
+        self.pos += bytes_read;
+        value as usize
     }
 
     fn parse_name(&mut self, last: char) -> ast::Name {
@@ -138,20 +144,9 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
     }
 
     pub fn parse_substs(&mut self) -> subst::Substs<'tcx> {
-        let regions = self.parse_region_substs();
+        let regions = self.parse_vec_per_param_space(|this| this.parse_region());
         let types = self.parse_vec_per_param_space(|this| this.parse_ty());
         subst::Substs { types: types, regions: regions }
-    }
-
-    fn parse_region_substs(&mut self) -> subst::RegionSubsts {
-        match self.next() {
-            'e' => subst::ErasedRegions,
-            'n' => {
-                subst::NonerasedRegions(
-                    self.parse_vec_per_param_space(|this| this.parse_region()))
-            }
-            _ => panic!("parse_bound_region: bad input")
-        }
     }
 
     fn parse_bound_region(&mut self) -> ty::BoundRegion {
@@ -172,7 +167,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 ty::BrFresh(id)
             }
             'e' => ty::BrEnv,
-            _ => panic!("parse_bound_region: bad input")
+            _ => bug!("parse_bound_region: bad input")
         }
     }
 
@@ -188,14 +183,12 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             }
             'B' => {
                 assert_eq!(self.next(), '[');
-                let def_id = self.parse_def();
                 let space = self.parse_param_space();
                 assert_eq!(self.next(), '|');
                 let index = self.parse_u32();
                 assert_eq!(self.next(), '|');
                 let name = token::intern(&self.parse_str(']'));
                 ty::ReEarlyBound(ty::EarlyBoundRegion {
-                    def_id: def_id,
                     space: space,
                     index: index,
                     name: name
@@ -221,7 +214,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             'e' => {
                 ty::ReStatic
             }
-            _ => panic!("parse_region: bad input")
+            _ => bug!("parse_region: bad input")
         }
     }
 
@@ -233,6 +226,17 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             // doesn't care about regions.
             //
             // May still be worth fixing though.
+            'C' => {
+                assert_eq!(self.next(), '[');
+                let fn_id = self.parse_uint() as ast::NodeId;
+                assert_eq!(self.next(), '|');
+                let body_id = self.parse_uint() as ast::NodeId;
+                assert_eq!(self.next(), ']');
+                region::CodeExtentData::CallSiteScope {
+                    fn_id: fn_id, body_id: body_id
+                }
+            }
+            // This creates scopes with the wrong NodeId. (See note above.)
             'P' => {
                 assert_eq!(self.next(), '[');
                 let fn_id = self.parse_uint() as ast::NodeId;
@@ -262,7 +266,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 };
                 region::CodeExtentData::Remainder(block_remainder)
             }
-            _ => panic!("parse_scope: bad input")
+            _ => bug!("parse_scope: bad input")
         })
     }
 
@@ -272,7 +276,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
         match self.next() {
             'n' => None,
             's' => Some(f(self)),
-            _ => panic!("parse_opt: bad input")
+            _ => bug!("parse_opt: bad input")
         }
     }
 
@@ -280,7 +284,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
         let mut result = String::new();
         while self.peek() != term {
             unsafe {
-                result.as_mut_vec().push_all(&[self.next_byte()])
+                result.as_mut_vec().extend_from_slice(&[self.next_byte()])
             }
         }
         self.next();
@@ -311,7 +315,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                     'D' => return tcx.types.i64,
                     'f' => return tcx.types.f32,
                     'F' => return tcx.types.f64,
-                    _ => panic!("parse_ty: bad numeric type")
+                    _ => bug!("parse_ty: bad numeric type")
                 }
             }
             'c' => return tcx.types.char,
@@ -365,10 +369,11 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             }
             'F' => {
                 let def_id = self.parse_def();
-                return tcx.mk_fn(Some(def_id), tcx.mk_bare_fn(self.parse_bare_fn_ty()));
+                let substs = self.tcx.mk_substs(self.parse_substs());
+                return tcx.mk_fn_def(def_id, substs, self.parse_bare_fn_ty());
             }
             'G' => {
-                return tcx.mk_fn(None, tcx.mk_bare_fn(self.parse_bare_fn_ty()));
+                return tcx.mk_fn_ptr(self.parse_bare_fn_ty());
             }
             '#' => {
                 // This is a hacky little caching scheme. The idea is that if we encode
@@ -436,7 +441,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
             'e' => {
                 return tcx.types.err;
             }
-            c => { panic!("unexpected char in type string: {}", c);}
+            c => { bug!("unexpected char in type string: {}", c);}
         }
     }
 
@@ -518,7 +523,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
         let variadic = match self.next() {
             'V' => true,
             'N' => false,
-            r => panic!(format!("bad variadic: {}", r)),
+            r => bug!("bad variadic: {}", r),
         };
         let output = match self.peek() {
             'z' => {
@@ -548,7 +553,19 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 assert_eq!(self.next(), '|');
                 ty::Predicate::ObjectSafe(def_id)
             }
-            c => panic!("Encountered invalid character in metadata: {}", c)
+            'c' => {
+                let def_id = self.parse_def();
+                assert_eq!(self.next(), '|');
+                let kind = match self.next() {
+                    'f' => ty::ClosureKind::Fn,
+                    'm' => ty::ClosureKind::FnMut,
+                    'o' => ty::ClosureKind::FnOnce,
+                    c => bug!("Encountered invalid character in metadata: {}", c)
+                };
+                assert_eq!(self.next(), '|');
+                ty::Predicate::ClosureKind(def_id, kind)
+            }
+            c => bug!("Encountered invalid character in metadata: {}", c)
         }
     }
 
@@ -597,7 +614,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 'R' => bounds.push(self.parse_region()),
                 '.' => { break; }
                 c => {
-                    panic!("parse_region_param_def: bad bounds ('{}')", c)
+                    bug!("parse_region_param_def: bad bounds ('{}')", c)
                 }
             }
         }
@@ -619,7 +636,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 let region = self.parse_region();
                 ty::ObjectLifetimeDefault::Specific(region)
             }
-            _ => panic!("parse_object_lifetime_default: bad input")
+            _ => bug!("parse_object_lifetime_default: bad input")
         }
     }
 
@@ -635,7 +652,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                 }
                 '.' => { break; }
                 c => {
-                    panic!("parse_bounds: bad bounds ('{}')", c)
+                    bug!("parse_bounds: bad bounds ('{}')", c)
                 }
             }
         }
@@ -664,7 +681,7 @@ impl<'a,'tcx> TyDecoder<'a,'tcx> {
                     return builtin_bounds;
                 }
                 c => {
-                    panic!("parse_bounds: bad builtin bounds ('{}')", c)
+                    bug!("parse_bounds: bad builtin bounds ('{}')", c)
                 }
             }
         }
@@ -678,7 +695,7 @@ fn parse_defid(buf: &[u8]) -> DefId {
     while colon_idx < len && buf[colon_idx] != ':' as u8 { colon_idx += 1; }
     if colon_idx == len {
         error!("didn't find ':' when parsing def id");
-        panic!();
+        bug!();
     }
 
     let crate_part = &buf[0..colon_idx];
@@ -688,14 +705,14 @@ fn parse_defid(buf: &[u8]) -> DefId {
         s.parse::<usize>().ok()
     }) {
         Some(cn) => cn as ast::CrateNum,
-        None => panic!("internal error: parse_defid: crate number expected, found {:?}",
+        None => bug!("internal error: parse_defid: crate number expected, found {:?}",
                        crate_part)
     };
     let def_num = match str::from_utf8(def_part).ok().and_then(|s| {
         s.parse::<usize>().ok()
     }) {
         Some(dn) => dn,
-        None => panic!("internal error: parse_defid: id expected, found {:?}",
+        None => bug!("internal error: parse_defid: id expected, found {:?}",
                        def_part)
     };
     let index = DefIndex::new(def_num);
@@ -706,6 +723,6 @@ fn parse_unsafety(c: char) -> hir::Unsafety {
     match c {
         'u' => hir::Unsafety::Unsafe,
         'n' => hir::Unsafety::Normal,
-        _ => panic!("parse_unsafety: bad unsafety {}", c)
+        _ => bug!("parse_unsafety: bad unsafety {}", c)
     }
 }

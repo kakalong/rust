@@ -49,13 +49,11 @@
 
 use any::TypeId;
 use boxed::Box;
-use convert::From;
+use char;
 use fmt::{self, Debug, Display};
 use marker::{Send, Sync, Reflect};
 use mem::transmute;
 use num;
-use option::Option::{self, Some, None};
-use result::Result::{self, Ok, Err};
 use raw::TraitObject;
 use str;
 use string::{self, String};
@@ -119,9 +117,25 @@ impl From<String> for Box<Error + Send + Sync> {
     }
 }
 
+#[stable(feature = "string_box_error", since = "1.7.0")]
+impl From<String> for Box<Error> {
+    fn from(str_err: String) -> Box<Error> {
+        let err1: Box<Error + Send + Sync> = From::from(str_err);
+        let err2: Box<Error> = err1;
+        err2
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, 'b> From<&'b str> for Box<Error + Send + Sync + 'a> {
     fn from(err: &'b str) -> Box<Error + Send + Sync + 'a> {
+        From::from(String::from(err))
+    }
+}
+
+#[stable(feature = "string_box_error", since = "1.7.0")]
+impl<'a> From<&'a str> for Box<Error> {
+    fn from(err: &'a str) -> Box<Error> {
         From::from(String::from(err))
     }
 }
@@ -163,6 +177,31 @@ impl Error for string::FromUtf8Error {
 impl Error for string::FromUtf16Error {
     fn description(&self) -> &str {
         "invalid utf-16"
+    }
+}
+
+#[stable(feature = "str_parse_error2", since = "1.8.0")]
+impl Error for string::ParseError {
+    fn description(&self) -> &str {
+        match *self {}
+    }
+}
+
+#[stable(feature = "decode_utf16", since = "1.9.0")]
+impl Error for char::DecodeUtf16Error {
+    fn description(&self) -> &str {
+        "unpaired surrogate found"
+    }
+}
+
+#[stable(feature = "box_error", since = "1.7.0")]
+impl<T: Error> Error for Box<T> {
+    fn description(&self) -> &str {
+        Error::description(&**self)
+    }
+
+    fn cause(&self) -> Option<&Error> {
+        Error::cause(&**self)
     }
 }
 

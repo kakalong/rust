@@ -27,8 +27,7 @@
 //! rustc will search each directory in the environment variable
 //! `RUST_TARGET_PATH` for a file named `TRIPLE.json`. The first one found will
 //! be loaded. If no file is found in any of those directories, a fatal error
-//! will be given.  `RUST_TARGET_PATH` includes `/etc/rustc` as its last entry,
-//! to be searched by default.
+//! will be given.
 //!
 //! Projects defining their own targets should use
 //! `--target=path/to/my-awesome-platform.json` instead of adding to
@@ -40,15 +39,15 @@
 //! this module defines the format the JSON file should take, though each
 //! underscore in the field names should be replaced with a hyphen (`-`) in the
 //! JSON file. Some fields are required in every target specification, such as
-//! `data-layout`, `llvm-target`, `target-endian`, `target-pointer-width`, and
-//! `arch`. In general, options passed to rustc with `-C` override the target's
-//! settings, though `target-feature` and `link-args` will *add* to the list
-//! specified by the target, rather than replace.
+//! `llvm-target`, `target-endian`, `target-pointer-width`, `data-layout`,
+//! `arch`, and `os`. In general, options passed to rustc with `-C` override
+//! the target's settings, though `target-feature` and `link-args` will *add*
+//! to the list specified by the target, rather than replace.
 
 use serialize::json::Json;
 use std::default::Default;
 use std::io::prelude::*;
-use syntax::{diagnostic, abi};
+use syntax::abi::Abi;
 
 mod android_base;
 mod apple_base;
@@ -59,8 +58,89 @@ mod freebsd_base;
 mod linux_base;
 mod openbsd_base;
 mod netbsd_base;
+mod solaris_base;
 mod windows_base;
 mod windows_msvc_base;
+
+macro_rules! supported_targets {
+    ( $(($triple:expr, $module:ident)),+ ) => (
+        $(mod $module;)*
+
+        /// List of supported targets
+        pub const TARGETS: &'static [&'static str] = &[$($triple),*];
+
+        // this would use a match if stringify! were allowed in pattern position
+        fn load_specific(target: &str) -> Option<Target> {
+            let target = target.replace("-", "_");
+            if false { }
+            $(
+                else if target == stringify!($module) {
+                    let mut t = $module::target();
+                    t.options.is_builtin = true;
+                    debug!("Got builtin target: {:?}", t);
+                    return Some(t);
+                }
+            )*
+
+            None
+        }
+    )
+}
+
+supported_targets! {
+    ("x86_64-unknown-linux-gnu", x86_64_unknown_linux_gnu),
+    ("i686-unknown-linux-gnu", i686_unknown_linux_gnu),
+    ("i586-unknown-linux-gnu", i586_unknown_linux_gnu),
+    ("mips-unknown-linux-gnu", mips_unknown_linux_gnu),
+    ("mipsel-unknown-linux-gnu", mipsel_unknown_linux_gnu),
+    ("powerpc-unknown-linux-gnu", powerpc_unknown_linux_gnu),
+    ("powerpc64-unknown-linux-gnu", powerpc64_unknown_linux_gnu),
+    ("powerpc64le-unknown-linux-gnu", powerpc64le_unknown_linux_gnu),
+    ("arm-unknown-linux-gnueabi", arm_unknown_linux_gnueabi),
+    ("arm-unknown-linux-gnueabihf", arm_unknown_linux_gnueabihf),
+    ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
+    ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
+    ("x86_64-unknown-linux-musl", x86_64_unknown_linux_musl),
+    ("i686-unknown-linux-musl", i686_unknown_linux_musl),
+    ("mips-unknown-linux-musl", mips_unknown_linux_musl),
+    ("mipsel-unknown-linux-musl", mipsel_unknown_linux_musl),
+
+    ("i686-linux-android", i686_linux_android),
+    ("arm-linux-androideabi", arm_linux_androideabi),
+    ("aarch64-linux-android", aarch64_linux_android),
+
+    ("i686-unknown-freebsd", i686_unknown_freebsd),
+    ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
+
+    ("i686-unknown-dragonfly", i686_unknown_dragonfly),
+    ("x86_64-unknown-dragonfly", x86_64_unknown_dragonfly),
+
+    ("x86_64-unknown-bitrig", x86_64_unknown_bitrig),
+    ("x86_64-unknown-openbsd", x86_64_unknown_openbsd),
+    ("x86_64-unknown-netbsd", x86_64_unknown_netbsd),
+    ("x86_64-rumprun-netbsd", x86_64_rumprun_netbsd),
+
+    ("x86_64-apple-darwin", x86_64_apple_darwin),
+    ("i686-apple-darwin", i686_apple_darwin),
+
+    ("i386-apple-ios", i386_apple_ios),
+    ("x86_64-apple-ios", x86_64_apple_ios),
+    ("aarch64-apple-ios", aarch64_apple_ios),
+    ("armv7-apple-ios", armv7_apple_ios),
+    ("armv7s-apple-ios", armv7s_apple_ios),
+
+    ("x86_64-sun-solaris", x86_64_sun_solaris),
+
+    ("x86_64-pc-windows-gnu", x86_64_pc_windows_gnu),
+    ("i686-pc-windows-gnu", i686_pc_windows_gnu),
+
+    ("x86_64-pc-windows-msvc", x86_64_pc_windows_msvc),
+    ("i686-pc-windows-msvc", i686_pc_windows_msvc),
+    ("i586-pc-windows-msvc", i586_pc_windows_msvc),
+
+    ("le32-unknown-nacl", le32_unknown_nacl),
+    ("asmjs-unknown-emscripten", asmjs_unknown_emscripten)
+}
 
 /// Everything `rustc` knows about how to compile for a specific target.
 ///
@@ -79,9 +159,11 @@ pub struct Target {
     pub target_env: String,
     /// Vendor name to use for conditional compilation.
     pub target_vendor: String,
-    /// Architecture to use for ABI considerations. Valid options: "x86", "x86_64", "arm",
-    /// "aarch64", "mips", and "powerpc". "mips" includes "mipsel".
+    /// Architecture to use for ABI considerations. Valid options: "x86",
+    /// "x86_64", "arm", "aarch64", "mips", "powerpc", and "powerpc64".
     pub arch: String,
+    /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
+    pub data_layout: String,
     /// Optional settings with defaults.
     pub options: TargetOptions,
 }
@@ -92,8 +174,9 @@ pub struct Target {
 /// these try to take "minimal defaults" that don't assume anything about the runtime they run in.
 #[derive(Clone, Debug)]
 pub struct TargetOptions {
-    /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
-    pub data_layout: Option<String>,
+    /// Whether the target is built-in or loaded from a custom target specification.
+    pub is_builtin: bool,
+
     /// Linker to invoke. Defaults to "cc".
     pub linker: String,
     /// Archive utility to use when managing archives. Defaults to "ar".
@@ -155,6 +238,10 @@ pub struct TargetOptions {
     /// Whether the target toolchain is like OSX's. Only useful for compiling against iOS/OS X, in
     /// particular running dsymutil and some other stuff like `-dead_strip`. Defaults to false.
     pub is_like_osx: bool,
+    /// Whether the target toolchain is like Solaris's.
+    /// Only useful for compiling against Illumos/Solaris,
+    /// as they have a different set of linker flags. Defaults to false.
+    pub is_like_solaris: bool,
     /// Whether the target toolchain is like Windows'. Only useful for compiling against Windows,
     /// only really used for figuring out how to find libraries, since Windows uses its own
     /// library naming convention. Defaults to false.
@@ -195,6 +282,14 @@ pub struct TargetOptions {
     /// Default crate for allocation symbols to link against
     pub lib_allocation_crate: String,
     pub exe_allocation_crate: String,
+
+    /// Flag indicating whether ELF TLS (e.g. #[thread_local]) is available for
+    /// this target.
+    pub has_elf_tls: bool,
+    // This is mainly for easy compatibility with emscripten.
+    // If we give emcc .o files that are actually .bc files it
+    // will 'just work'.
+    pub obj_is_bitcode: bool,
 }
 
 impl Default for TargetOptions {
@@ -202,7 +297,7 @@ impl Default for TargetOptions {
     /// incomplete, and if used for compilation, will certainly not work.
     fn default() -> TargetOptions {
         TargetOptions {
-            data_layout: None,
+            is_builtin: false,
             linker: option_env!("CFG_DEFAULT_LINKER").unwrap_or("cc").to_string(),
             ar: option_env!("CFG_DEFAULT_AR").unwrap_or("ar").to_string(),
             pre_link_args: Vec::new(),
@@ -223,6 +318,7 @@ impl Default for TargetOptions {
             staticlib_suffix: ".a".to_string(),
             target_family: None,
             is_like_osx: false,
+            is_like_solaris: false,
             is_like_windows: false,
             is_like_android: false,
             is_like_msvc: false,
@@ -235,24 +331,26 @@ impl Default for TargetOptions {
             pre_link_objects_dll: Vec::new(),
             post_link_objects: Vec::new(),
             late_link_args: Vec::new(),
-            archive_format: String::new(),
+            archive_format: "gnu".to_string(),
             custom_unwind_resume: false,
             lib_allocation_crate: "alloc_system".to_string(),
             exe_allocation_crate: "alloc_system".to_string(),
             allow_asm: true,
+            has_elf_tls: false,
+            obj_is_bitcode: false,
         }
     }
 }
 
 impl Target {
     /// Given a function ABI, turn "System" into the correct ABI for this target.
-    pub fn adjust_abi(&self, abi: abi::Abi) -> abi::Abi {
+    pub fn adjust_abi(&self, abi: Abi) -> Abi {
         match abi {
-            abi::System => {
+            Abi::System => {
                 if self.options.is_like_windows && self.arch == "x86" {
-                    abi::Stdcall
+                    Abi::Stdcall
                 } else {
-                    abi::C
+                    Abi::C
                 }
             },
             abi => abi
@@ -263,17 +361,13 @@ impl Target {
     pub fn from_json(obj: Json) -> Target {
         // this is 1. ugly, 2. error prone.
 
-
-        let handler = diagnostic::Handler::new(diagnostic::Auto, None, true);
-
         let get_req_field = |name: &str| {
             match obj.find(name)
                      .map(|s| s.as_string())
                      .and_then(|os| os.map(|s| s.to_string())) {
                 Some(val) => val,
                 None => {
-                    panic!(handler.fatal(&format!("Field {} in target specification is required",
-                                                  name)))
+                    panic!("Field {} in target specification is required", name)
                 }
             }
         };
@@ -288,6 +382,7 @@ impl Target {
             llvm_target: get_req_field("llvm-target"),
             target_endian: get_req_field("target-endian"),
             target_pointer_width: get_req_field("target-pointer-width"),
+            data_layout: get_req_field("data-layout"),
             arch: get_req_field("arch"),
             target_os: get_req_field("os"),
             target_env: get_opt_field("env", ""),
@@ -336,7 +431,6 @@ impl Target {
         key!(staticlib_prefix);
         key!(staticlib_suffix);
         key!(features);
-        key!(data_layout, optional);
         key!(dynamic_linking, bool);
         key!(executables, bool);
         key!(disable_redzone, bool);
@@ -345,6 +439,7 @@ impl Target {
         key!(target_family, optional);
         key!(is_like_osx, bool);
         key!(is_like_windows, bool);
+        key!(is_like_msvc, bool);
         key!(linker_is_gnu, bool);
         key!(has_rpath, bool);
         key!(no_compiler_rt, bool);
@@ -373,83 +468,17 @@ impl Target {
         use serialize::json;
 
         fn load_file(path: &Path) -> Result<Target, String> {
-            let mut f = try!(File::open(path).map_err(|e| e.to_string()));
+            let mut f = File::open(path).map_err(|e| e.to_string())?;
             let mut contents = Vec::new();
-            try!(f.read_to_end(&mut contents).map_err(|e| e.to_string()));
-            let obj = try!(json::from_reader(&mut &contents[..])
-                                .map_err(|e| e.to_string()));
+            f.read_to_end(&mut contents).map_err(|e| e.to_string())?;
+            let obj = json::from_reader(&mut &contents[..])
+                           .map_err(|e| e.to_string())?;
             Ok(Target::from_json(obj))
         }
 
-        // this would use a match if stringify! were allowed in pattern position
-        macro_rules! load_specific {
-            ( $($name:ident),+ ) => (
-                {
-                    $(mod $name;)*
-                    let target = target.replace("-", "_");
-                    if false { }
-                    $(
-                        else if target == stringify!($name) {
-                            let t = $name::target();
-                            debug!("Got builtin target: {:?}", t);
-                            return Ok(t);
-                        }
-                    )*
-                    else if target == "x86_64-w64-mingw32" {
-                        let t = x86_64_pc_windows_gnu::target();
-                        return Ok(t);
-                    } else if target == "i686-w64-mingw32" {
-                        let t = i686_pc_windows_gnu::target();
-                        return Ok(t);
-                    }
-                }
-            )
+        if let Some(t) = load_specific(target) {
+            return Ok(t)
         }
-
-        load_specific!(
-            x86_64_unknown_linux_gnu,
-            i686_unknown_linux_gnu,
-            mips_unknown_linux_gnu,
-            mipsel_unknown_linux_gnu,
-            powerpc_unknown_linux_gnu,
-            arm_unknown_linux_gnueabi,
-            arm_unknown_linux_gnueabihf,
-            aarch64_unknown_linux_gnu,
-            x86_64_unknown_linux_musl,
-
-            i686_linux_android,
-            arm_linux_androideabi,
-            aarch64_linux_android,
-
-            i686_unknown_freebsd,
-            x86_64_unknown_freebsd,
-
-            i686_unknown_dragonfly,
-            x86_64_unknown_dragonfly,
-
-            x86_64_unknown_bitrig,
-            x86_64_unknown_openbsd,
-            x86_64_unknown_netbsd,
-            x86_64_rumprun_netbsd,
-
-            x86_64_apple_darwin,
-            i686_apple_darwin,
-
-            i386_apple_ios,
-            x86_64_apple_ios,
-            aarch64_apple_ios,
-            armv7_apple_ios,
-            armv7s_apple_ios,
-
-            x86_64_pc_windows_gnu,
-            i686_pc_windows_gnu,
-
-            x86_64_pc_windows_msvc,
-            i686_pc_windows_msvc,
-
-            le32_unknown_nacl
-        );
-
 
         let path = Path::new(target);
 
@@ -480,9 +509,9 @@ impl Target {
 }
 
 fn maybe_jemalloc() -> String {
-    if cfg!(disable_jemalloc) {
-        "alloc_system".to_string()
-    } else {
+    if cfg!(feature = "jemalloc") {
         "alloc_jemalloc".to_string()
+    } else {
+        "alloc_system".to_string()
     }
 }

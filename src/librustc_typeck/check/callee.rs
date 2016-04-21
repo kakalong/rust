@@ -26,14 +26,15 @@ use super::write_call;
 
 use CrateCtxt;
 use middle::cstore::LOCAL_CRATE;
-use middle::def_id::DefId;
-use middle::infer;
-use middle::ty::{self, LvaluePreference, Ty};
+use hir::def::Def;
+use hir::def_id::DefId;
+use rustc::infer;
+use rustc::ty::{self, LvaluePreference, Ty};
 use syntax::codemap::Span;
 use syntax::parse::token;
 use syntax::ptr::P;
 
-use rustc_front::hir;
+use rustc::hir;
 
 /// Check that it is legal to call methods of the trait corresponding
 /// to `trait_id` (this only cares about the trait, not the specific
@@ -60,11 +61,12 @@ pub fn check_legal_trait_for_method_call(ccx: &CrateCtxt, span: Span, trait_id: 
             return // not a closure method, everything is OK.
         };
 
-        span_err!(tcx.sess, span, E0174,
-                  "explicit use of unboxed closure method `{}` is experimental",
-                  method);
-        fileline_help!(tcx.sess, span,
-                   "add `#![feature(unboxed_closures)]` to the crate attributes to enable");
+        struct_span_err!(tcx.sess, span, E0174,
+                         "explicit use of unboxed closure method `{}` is experimental",
+                         method)
+            .fileline_help(span, "add `#![feature(unboxed_closures)]` to the crate \
+                                  attributes to enable")
+            .emit();
     }
 }
 
@@ -80,7 +82,7 @@ pub fn check_call<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
         autoderef(fcx,
                   callee_expr.span,
                   original_callee_ty,
-                  Some(callee_expr),
+                  || Some(callee_expr),
                   UnresolvedTypeAction::Error,
                   LvaluePreference::NoPreference,
                   |adj_ty, idx| {
@@ -128,7 +130,7 @@ fn try_overloaded_call_step<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 
     // If the callee is a bare function or a closure, then we're all set.
     match structurally_resolved_type(fcx, callee_expr.span, adjusted_ty).sty {
-        ty::TyBareFn(..) => {
+        ty::TyFnDef(..) | ty::TyFnPtr(_) => {
             fcx.write_autoderef_adjustment(callee_expr.id, autoderefs);
             return Some(CallStep::Builtin);
         }
@@ -197,7 +199,7 @@ fn try_overloaded_call_traits<'a,'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 
         match method::lookup_in_trait_adjusted(fcx,
                                                call_expr.span,
-                                               Some(&*callee_expr),
+                                               Some(&callee_expr),
                                                method_name,
                                                trait_def_id,
                                                autoderefs,
@@ -223,24 +225,27 @@ fn confirm_builtin_call<'a,'tcx>(fcx: &FnCtxt<'a,'tcx>,
     let error_fn_sig;
 
     let fn_sig = match callee_ty.sty {
-        ty::TyBareFn(_, &ty::BareFnTy {ref sig, ..}) => {
+        ty::TyFnDef(_, _, &ty::BareFnTy {ref sig, ..}) |
+        ty::TyFnPtr(&ty::BareFnTy {ref sig, ..}) => {
             sig
         }
         _ => {
-            fcx.type_error_message(call_expr.span, |actual| {
+            let mut err = fcx.type_error_struct(call_expr.span, |actual| {
                 format!("expected function, found `{}`", actual)
             }, callee_ty, None);
 
             if let hir::ExprCall(ref expr, _) = call_expr.node {
                 let tcx = fcx.tcx();
                 if let Some(pr) = tcx.def_map.borrow().get(&expr.id) {
-                    if pr.depth == 0 {
+                    if pr.depth == 0 && pr.base_def != Def::Err {
                         if let Some(span) = tcx.map.span_if_local(pr.def_id()) {
-                            tcx.sess.span_note(span, "defined here")
+                            err.span_note(span, "defined here");
                         }
                     }
                 }
             }
+
+            err.emit();
 
             // This is the "default" function signature, used in case of error.
             // In that case, we check each argument against "error" in order to
@@ -300,12 +305,12 @@ fn confirm_deferred_closure_call<'a,'tcx>(fcx: &FnCtxt<'a,'tcx>,
                                    call_expr.span,
                                    expected,
                                    fn_sig.output.clone(),
-                                   &*fn_sig.inputs);
+                                   &fn_sig.inputs);
 
     check_argument_types(fcx,
                          call_expr.span,
-                         &*fn_sig.inputs,
-                         &*expected_arg_tys,
+                         &fn_sig.inputs,
+                         &expected_arg_tys,
                          arg_exprs,
                          fn_sig.variadic,
                          TupleArgumentsFlag::TupleArguments);
@@ -392,7 +397,7 @@ impl<'tcx> DeferredCallResolution<'tcx> for CallResolution<'tcx> {
                 write_overloaded_call_method_map(fcx, self.call_expr, method_callee);
             }
             None => {
-                fcx.tcx().sess.span_bug(
+                span_bug!(
                     self.call_expr.span,
                     "failed to find an overloaded call trait for closure call");
             }

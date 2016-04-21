@@ -16,8 +16,6 @@
 //! is not recommended to use this library directly, but rather the official
 //! interface through `std::rand`.
 
-// Do not remove on snapshot creation. Needed for bootstrap. (Issue #22364)
-#![cfg_attr(stage0, feature(custom_attribute))]
 #![crate_name = "rand"]
 #![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk.png",
@@ -25,31 +23,25 @@
        html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        test(attr(deny(warnings))))]
+#![cfg_attr(not(stage0), deny(warnings))]
 #![no_std]
-#![cfg_attr(stage0, staged_api)]
 #![unstable(feature = "rand",
             reason = "use `rand` from crates.io",
             issue = "27703")]
 #![feature(core_float)]
 #![feature(core_intrinsics)]
-#![feature(core_slice_ext)]
-#![feature(no_std)]
-#![feature(num_bits_bytes)]
 #![feature(staged_api)]
 #![feature(step_by)]
 #![feature(custom_attribute)]
 #![allow(unused_attributes)]
 
-#![cfg_attr(test, feature(test, rand, rustc_private, iter_order_deprecated))]
+#![cfg_attr(test, feature(test, rand))]
 
 #![allow(deprecated)]
 
 #[cfg(test)]
 #[macro_use]
 extern crate std;
-#[cfg(test)]
-#[macro_use]
-extern crate log;
 
 use core::f64;
 use core::intrinsics;
@@ -74,6 +66,7 @@ mod rand_impls;
 // needed by librand; this is necessary because librand doesn't
 // depend on libstd.  This will go away when librand is integrated
 // into libstd.
+#[doc(hidden)]
 trait FloatMath : Sized {
     fn exp(self) -> Self;
     fn ln(self) -> Self;

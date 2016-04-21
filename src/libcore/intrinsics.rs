@@ -53,11 +53,25 @@ extern "rust-intrinsic" {
     // NB: These intrinsics take raw pointers because they mutate aliased
     // memory, which is not valid for either `&` or `&mut`.
 
-    pub fn atomic_cxchg<T>(dst: *mut T, old: T, src: T) -> T;
-    pub fn atomic_cxchg_acq<T>(dst: *mut T, old: T, src: T) -> T;
-    pub fn atomic_cxchg_rel<T>(dst: *mut T, old: T, src: T) -> T;
-    pub fn atomic_cxchg_acqrel<T>(dst: *mut T, old: T, src: T) -> T;
-    pub fn atomic_cxchg_relaxed<T>(dst: *mut T, old: T, src: T) -> T;
+    pub fn atomic_cxchg<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_acq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_rel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_acqrel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_relaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_failacq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_acq_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchg_acqrel_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+
+    pub fn atomic_cxchgweak<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_acq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_rel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_acqrel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_relaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_failacq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_acq_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
+    pub fn atomic_cxchgweak_acqrel_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
 
     pub fn atomic_load<T>(src: *const T) -> T;
     pub fn atomic_load_acq<T>(src: *const T) -> T;
@@ -213,7 +227,7 @@ extern "rust-intrinsic" {
     ///
     /// This has all the same safety problems as `ptr::read` with respect to
     /// invalid pointers, types, and double drops.
-    #[unstable(feature = "drop_in_place", reason = "just exposed, needs FCP", issue = "27908")]
+    #[stable(feature = "drop_in_place", since = "1.8.0")]
     pub fn drop_in_place<T: ?Sized>(to_drop: *mut T);
 
     /// Gets a static string slice containing the name of a type.
@@ -512,164 +526,53 @@ extern "rust-intrinsic" {
     /// Returns the nearest integer to an `f64`. Rounds half-way cases away from zero.
     pub fn roundf64(x: f64) -> f64;
 
-    /// Returns the number of bits set in a `u8`.
-    #[cfg(stage0)]
-    pub fn ctpop8(x: u8) -> u8;
-    /// Returns the number of bits set in a `u16`.
-    #[cfg(stage0)]
-    pub fn ctpop16(x: u16) -> u16;
-    /// Returns the number of bits set in a `u32`.
-    #[cfg(stage0)]
-    pub fn ctpop32(x: u32) -> u32;
-    /// Returns the number of bits set in a `u64`.
-    #[cfg(stage0)]
-    pub fn ctpop64(x: u64) -> u64;
+    /// Float addition that allows optimizations based on algebraic rules.
+    /// May assume inputs are finite.
+    pub fn fadd_fast<T>(a: T, b: T) -> T;
+
+    /// Float subtraction that allows optimizations based on algebraic rules.
+    /// May assume inputs are finite.
+    pub fn fsub_fast<T>(a: T, b: T) -> T;
+
+    /// Float multiplication that allows optimizations based on algebraic rules.
+    /// May assume inputs are finite.
+    pub fn fmul_fast<T>(a: T, b: T) -> T;
+
+    /// Float division that allows optimizations based on algebraic rules.
+    /// May assume inputs are finite.
+    pub fn fdiv_fast<T>(a: T, b: T) -> T;
+
+    /// Float remainder that allows optimizations based on algebraic rules.
+    /// May assume inputs are finite.
+    pub fn frem_fast<T>(a: T, b: T) -> T;
+
+
     /// Returns the number of bits set in an integer type `T`
-    #[cfg(not(stage0))]
     pub fn ctpop<T>(x: T) -> T;
 
-    /// Returns the number of leading bits unset in a `u8`.
-    #[cfg(stage0)]
-    pub fn ctlz8(x: u8) -> u8;
-    /// Returns the number of leading bits unset in a `u16`.
-    #[cfg(stage0)]
-    pub fn ctlz16(x: u16) -> u16;
-    /// Returns the number of leading bits unset in a `u32`.
-    #[cfg(stage0)]
-    pub fn ctlz32(x: u32) -> u32;
-    /// Returns the number of leading bits unset in a `u64`.
-    #[cfg(stage0)]
-    pub fn ctlz64(x: u64) -> u64;
     /// Returns the number of leading bits unset in an integer type `T`
-    #[cfg(not(stage0))]
     pub fn ctlz<T>(x: T) -> T;
 
-    /// Returns the number of trailing bits unset in a `u8`.
-    #[cfg(stage0)]
-    pub fn cttz8(x: u8) -> u8;
-    /// Returns the number of trailing bits unset in a `u16`.
-    #[cfg(stage0)]
-    pub fn cttz16(x: u16) -> u16;
-    /// Returns the number of trailing bits unset in a `u32`.
-    #[cfg(stage0)]
-    pub fn cttz32(x: u32) -> u32;
-    /// Returns the number of trailing bits unset in a `u64`.
-    #[cfg(stage0)]
-    pub fn cttz64(x: u64) -> u64;
     /// Returns the number of trailing bits unset in an integer type `T`
-    #[cfg(not(stage0))]
     pub fn cttz<T>(x: T) -> T;
 
-    /// Reverses the bytes in a `u16`.
-    #[cfg(stage0)]
-    pub fn bswap16(x: u16) -> u16;
-    /// Reverses the bytes in a `u32`.
-    #[cfg(stage0)]
-    pub fn bswap32(x: u32) -> u32;
-    /// Reverses the bytes in a `u64`.
-    #[cfg(stage0)]
-    pub fn bswap64(x: u64) -> u64;
     /// Reverses the bytes in an integer type `T`.
-    #[cfg(not(stage0))]
     pub fn bswap<T>(x: T) -> T;
 
-    /// Performs checked `i8` addition.
-    #[cfg(stage0)]
-    pub fn i8_add_with_overflow(x: i8, y: i8) -> (i8, bool);
-    /// Performs checked `i16` addition.
-    #[cfg(stage0)]
-    pub fn i16_add_with_overflow(x: i16, y: i16) -> (i16, bool);
-    /// Performs checked `i32` addition.
-    #[cfg(stage0)]
-    pub fn i32_add_with_overflow(x: i32, y: i32) -> (i32, bool);
-    /// Performs checked `i64` addition.
-    #[cfg(stage0)]
-    pub fn i64_add_with_overflow(x: i64, y: i64) -> (i64, bool);
-
-    /// Performs checked `u8` addition.
-    #[cfg(stage0)]
-    pub fn u8_add_with_overflow(x: u8, y: u8) -> (u8, bool);
-    /// Performs checked `u16` addition.
-    #[cfg(stage0)]
-    pub fn u16_add_with_overflow(x: u16, y: u16) -> (u16, bool);
-    /// Performs checked `u32` addition.
-    #[cfg(stage0)]
-    pub fn u32_add_with_overflow(x: u32, y: u32) -> (u32, bool);
-    /// Performs checked `u64` addition.
-    #[cfg(stage0)]
-    pub fn u64_add_with_overflow(x: u64, y: u64) -> (u64, bool);
-
     /// Performs checked integer addition.
-    #[cfg(not(stage0))]
     pub fn add_with_overflow<T>(x: T, y: T) -> (T, bool);
 
-    /// Performs checked `i8` subtraction.
-    #[cfg(stage0)]
-    pub fn i8_sub_with_overflow(x: i8, y: i8) -> (i8, bool);
-    /// Performs checked `i16` subtraction.
-    #[cfg(stage0)]
-    pub fn i16_sub_with_overflow(x: i16, y: i16) -> (i16, bool);
-    /// Performs checked `i32` subtraction.
-    #[cfg(stage0)]
-    pub fn i32_sub_with_overflow(x: i32, y: i32) -> (i32, bool);
-    /// Performs checked `i64` subtraction.
-    #[cfg(stage0)]
-    pub fn i64_sub_with_overflow(x: i64, y: i64) -> (i64, bool);
-
-    /// Performs checked `u8` subtraction.
-    #[cfg(stage0)]
-    pub fn u8_sub_with_overflow(x: u8, y: u8) -> (u8, bool);
-    /// Performs checked `u16` subtraction.
-    #[cfg(stage0)]
-    pub fn u16_sub_with_overflow(x: u16, y: u16) -> (u16, bool);
-    /// Performs checked `u32` subtraction.
-    #[cfg(stage0)]
-    pub fn u32_sub_with_overflow(x: u32, y: u32) -> (u32, bool);
-    /// Performs checked `u64` subtraction.
-    #[cfg(stage0)]
-    pub fn u64_sub_with_overflow(x: u64, y: u64) -> (u64, bool);
-
     /// Performs checked integer subtraction
-    #[cfg(not(stage0))]
     pub fn sub_with_overflow<T>(x: T, y: T) -> (T, bool);
 
-    /// Performs checked `i8` multiplication.
-    #[cfg(stage0)]
-    pub fn i8_mul_with_overflow(x: i8, y: i8) -> (i8, bool);
-    /// Performs checked `i16` multiplication.
-    #[cfg(stage0)]
-    pub fn i16_mul_with_overflow(x: i16, y: i16) -> (i16, bool);
-    /// Performs checked `i32` multiplication.
-    #[cfg(stage0)]
-    pub fn i32_mul_with_overflow(x: i32, y: i32) -> (i32, bool);
-    /// Performs checked `i64` multiplication.
-    #[cfg(stage0)]
-    pub fn i64_mul_with_overflow(x: i64, y: i64) -> (i64, bool);
-
-    /// Performs checked `u8` multiplication.
-    #[cfg(stage0)]
-    pub fn u8_mul_with_overflow(x: u8, y: u8) -> (u8, bool);
-    /// Performs checked `u16` multiplication.
-    #[cfg(stage0)]
-    pub fn u16_mul_with_overflow(x: u16, y: u16) -> (u16, bool);
-    /// Performs checked `u32` multiplication.
-    #[cfg(stage0)]
-    pub fn u32_mul_with_overflow(x: u32, y: u32) -> (u32, bool);
-    /// Performs checked `u64` multiplication.
-    #[cfg(stage0)]
-    pub fn u64_mul_with_overflow(x: u64, y: u64) -> (u64, bool);
-
     /// Performs checked integer multiplication
-    #[cfg(not(stage0))]
     pub fn mul_with_overflow<T>(x: T, y: T) -> (T, bool);
 
     /// Performs an unchecked division, resulting in undefined behavior
     /// where y = 0 or x = `T::min_value()` and y = -1
-    #[cfg(not(stage0))]
     pub fn unchecked_div<T>(x: T, y: T) -> T;
     /// Returns the remainder of an unchecked division, resulting in
     /// undefined behavior where y = 0 or x = `T::min_value()` and y = -1
-    #[cfg(not(stage0))]
     pub fn unchecked_rem<T>(x: T, y: T) -> T;
 
     /// Returns (a + b) mod 2^N, where N is the width of T in bits.
@@ -684,7 +587,12 @@ extern "rust-intrinsic" {
     pub fn discriminant_value<T>(v: &T) -> u64;
 
     /// Rust's "try catch" construct which invokes the function pointer `f` with
-    /// the data pointer `data`, returning the exception payload if an exception
-    /// is thrown (aka the thread panics).
-    pub fn try(f: fn(*mut u8), data: *mut u8) -> *mut u8;
+    /// the data pointer `data`.
+    ///
+    /// The third pointer is a target-specific data pointer which is filled in
+    /// with the specifics of the exception that occurred. For examples on Unix
+    /// platforms this is a `*mut *mut T` which is filled in by the compiler and
+    /// on MSVC it's `*mut [usize; 2]`. For more information see the compiler's
+    /// source as well as std's catch implementation.
+    pub fn try(f: fn(*mut u8), data: *mut u8, local_ptr: *mut u8) -> i32;
 }

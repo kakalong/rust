@@ -16,14 +16,18 @@
 /// that the unicode parts of `CharExt` and `UnicodeStrPrelude` traits are based on.
 pub const UNICODE_VERSION: (u64, u64, u64) = (8, 0, 0);
 
-fn bsearch_range_table(c: char, r: &'static [(char,char)]) -> bool {
+fn bsearch_range_table(c: char, r: &'static [(char, char)]) -> bool {
     use core::cmp::Ordering::{Equal, Less, Greater};
-    use core::slice::SliceExt;
-    r.binary_search_by(|&(lo,hi)| {
-        if lo <= c && c <= hi { Equal }
-        else if hi < c { Less }
-        else { Greater }
-    }).is_ok()
+    r.binary_search_by(|&(lo, hi)| {
+         if c < lo {
+             Greater
+         } else if hi < c {
+             Less
+         } else {
+             Equal
+         }
+     })
+     .is_ok()
 }
 
 pub mod general_category {
@@ -1176,6 +1180,15 @@ pub mod derived_property {
 }
 
 pub mod property {
+    pub const Pattern_White_Space_table: &'static [(char, char)] = &[
+        ('\u{9}', '\u{d}'), ('\u{20}', '\u{20}'), ('\u{85}', '\u{85}'), ('\u{200e}', '\u{200f}'),
+        ('\u{2028}', '\u{2029}')
+    ];
+
+    pub fn Pattern_White_Space(c: char) -> bool {
+        super::bsearch_range_table(c, Pattern_White_Space_table)
+    }
+
     pub const White_Space_table: &'static [(char, char)] = &[
         ('\u{9}', '\u{d}'), ('\u{20}', '\u{20}'), ('\u{85}', '\u{85}'), ('\u{a0}', '\u{a0}'),
         ('\u{1680}', '\u{1680}'), ('\u{2000}', '\u{200a}'), ('\u{2028}', '\u{2029}'), ('\u{202f}',
@@ -1189,35 +1202,25 @@ pub mod property {
 }
 
 pub mod conversions {
-    use core::cmp::Ordering::{Equal, Less, Greater};
-    use core::slice::SliceExt;
     use core::option::Option;
     use core::option::Option::{Some, None};
-    use core::result::Result::{Ok, Err};
 
     pub fn to_lower(c: char) -> [char; 3] {
         match bsearch_case_table(c, to_lowercase_table) {
-          None        => [c, '\0', '\0'],
-          Some(index) => to_lowercase_table[index].1
+            None        => [c, '\0', '\0'],
+            Some(index) => to_lowercase_table[index].1,
         }
     }
 
     pub fn to_upper(c: char) -> [char; 3] {
         match bsearch_case_table(c, to_uppercase_table) {
             None        => [c, '\0', '\0'],
-            Some(index) => to_uppercase_table[index].1
+            Some(index) => to_uppercase_table[index].1,
         }
     }
 
     fn bsearch_case_table(c: char, table: &'static [(char, [char; 3])]) -> Option<usize> {
-        match table.binary_search_by(|&(key, _)| {
-            if c == key { Equal }
-            else if key < c { Less }
-            else { Greater }
-        }) {
-            Ok(i) => Some(i),
-            Err(_) => None,
-        }
+        table.binary_search_by(|&(key, _)| key.cmp(&c)).ok()
     }
 
     const to_lowercase_table: &'static [(char, [char; 3])] = &[

@@ -8,17 +8,22 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::Target;
+use target::{Target, TargetOptions};
 
 pub fn target() -> Target {
     Target {
         llvm_target: "mips-unknown-linux-gnu".to_string(),
         target_endian: "big".to_string(),
         target_pointer_width: "32".to_string(),
+        data_layout: "E-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64".to_string(),
         arch: "mips".to_string(),
         target_os: "linux".to_string(),
         target_env: "gnu".to_string(),
         target_vendor: "unknown".to_string(),
-        options: super::linux_base::opts()
+        options: TargetOptions {
+            cpu: "mips32r2".to_string(),
+            features: "+mips32r2,+soft-float".to_string(),
+            ..super::linux_base::opts()
+        },
     }
 }

@@ -45,10 +45,6 @@ fn test_simple() {
     assert_eq!(d.len(), 3);
     d.push_front(1);
     assert_eq!(d.len(), 4);
-    debug!("{}", d[0]);
-    debug!("{}", d[1]);
-    debug!("{}", d[2]);
-    debug!("{}", d[3]);
     assert_eq!(d[0], 1);
     assert_eq!(d[1], 2);
     assert_eq!(d[2], 3);
@@ -606,6 +602,52 @@ fn test_hash() {
 }
 
 #[test]
+fn test_hash_after_rotation() {
+    // test that two deques hash equal even if elements are laid out differently
+    let len = 28;
+    let mut ring: VecDeque<i32> = (0..len as i32).collect();
+    let orig = ring.clone();
+    for _ in 0..ring.capacity() {
+        // shift values 1 step to the right by pop, sub one, push
+        ring.pop_front();
+        for elt in &mut ring {
+            *elt -= 1;
+        }
+        ring.push_back(len - 1);
+        assert_eq!(::hash(&orig), ::hash(&ring));
+        assert_eq!(orig, ring);
+        assert_eq!(ring, orig);
+    }
+}
+
+#[test]
+fn test_eq_after_rotation() {
+    // test that two deques are equal even if elements are laid out differently
+    let len = 28;
+    let mut ring: VecDeque<i32> = (0..len as i32).collect();
+    let mut shifted = ring.clone();
+    for _ in 0..10 {
+        // shift values 1 step to the right by pop, sub one, push
+        ring.pop_front();
+        for elt in &mut ring {
+            *elt -= 1;
+        }
+        ring.push_back(len - 1);
+    }
+
+    // try every shift
+    for _ in 0..shifted.capacity() {
+        shifted.pop_front();
+        for elt in &mut shifted {
+            *elt -= 1;
+        }
+        shifted.push_back(len - 1);
+        assert_eq!(shifted, ring);
+        assert_eq!(ring, shifted);
+    }
+}
+
+#[test]
 fn test_ord() {
     let x = VecDeque::new();
     let mut y = VecDeque::new();
@@ -916,4 +958,17 @@ fn test_extend_ref() {
     assert_eq!(v[3], 4);
     assert_eq!(v[4], 5);
     assert_eq!(v[5], 6);
+}
+
+#[test]
+fn test_contains() {
+    let mut v = VecDeque::new();
+    v.extend(&[2, 3, 4]);
+
+    assert!(v.contains(&3));
+    assert!(!v.contains(&1));
+
+    v.clear();
+
+    assert!(!v.contains(&3));
 }

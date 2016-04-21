@@ -12,18 +12,14 @@
 //! outside their scopes. This pass will also generate a set of exported items
 //! which are available for use externally when compiled as a library.
 
-pub use self::PrivateDep::*;
-pub use self::ImportUse::*;
-pub use self::LastPrivate::*;
-
-use middle::def_id::DefId;
 use util::nodemap::{DefIdSet, FnvHashMap};
 
 use std::hash::Hash;
+use std::fmt;
 use syntax::ast::NodeId;
 
 // Accessibility levels, sorted in ascending order
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AccessLevel {
     // Exported items + items participating in various kinds of public interfaces,
     // but not directly nameable. For example, if function `fn f() -> T {...}` is
@@ -61,42 +57,12 @@ impl<Id: Hash + Eq> Default for AccessLevels<Id> {
     }
 }
 
+impl<Id: Hash + Eq + fmt::Debug> fmt::Debug for AccessLevels<Id> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&self.map, f)
+    }
+}
+
 /// A set containing all exported definitions from external crates.
 /// The set does not contain any entries from local crates.
 pub type ExternalExports = DefIdSet;
-
-#[derive(Copy, Clone, Debug)]
-pub enum LastPrivate {
-    LastMod(PrivateDep),
-    // `use` directives (imports) can refer to two separate definitions in the
-    // type and value namespaces. We record here the last private node for each
-    // and whether the import is in fact used for each.
-    // If the Option<PrivateDep> fields are None, it means there is no definition
-    // in that namespace.
-    LastImport{value_priv: Option<PrivateDep>,
-               value_used: ImportUse,
-               type_priv: Option<PrivateDep>,
-               type_used: ImportUse},
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum PrivateDep {
-    AllPublic,
-    DependsOn(DefId),
-}
-
-// How an import is used.
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub enum ImportUse {
-    Unused,       // The import is not used.
-    Used,         // The import is used.
-}
-
-impl LastPrivate {
-    pub fn or(self, other: LastPrivate) -> LastPrivate {
-        match (self, other) {
-            (me, LastMod(AllPublic)) => me,
-            (_, other) => other,
-        }
-    }
-}

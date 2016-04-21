@@ -15,11 +15,9 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use prelude::v1::*;
-
 use intrinsics;
 use mem;
-use num::{Float, ParseFloatError};
+use num::Float;
 use num::FpCategory as Fp;
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -143,7 +141,7 @@ pub mod consts {
 
 #[unstable(feature = "core_float",
            reason = "stable interface is via `impl f{32,64}` in later crates",
-           issue = "27702")]
+           issue = "32110")]
 impl Float for f32 {
     #[inline]
     fn nan() -> f32 { NAN }
@@ -162,8 +160,6 @@ impl Float for f32 {
 
     #[inline]
     fn one() -> f32 { 1.0 }
-
-    from_str_radix_float_impl! { f32 }
 
     /// Returns `true` if the number is NaN.
     #[inline]
@@ -243,14 +239,14 @@ impl Float for f32 {
     /// Returns `true` if `self` is positive, including `+0.0` and
     /// `Float::infinity()`.
     #[inline]
-    fn is_positive(self) -> bool {
+    fn is_sign_positive(self) -> bool {
         self > 0.0 || (1.0 / self) == Float::infinity()
     }
 
     /// Returns `true` if `self` is negative, including `-0.0` and
     /// `Float::neg_infinity()`.
     #[inline]
-    fn is_negative(self) -> bool {
+    fn is_sign_negative(self) -> bool {
         self < 0.0 || (1.0 / self) == Float::neg_infinity()
     }
 

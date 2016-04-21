@@ -117,6 +117,74 @@ declare_lint! {
     Allow,
     "detects trivial casts of numeric types which could be removed"
 }
+
+declare_lint! {
+    pub PRIVATE_IN_PUBLIC,
+    Warn,
+    "detect private items in public interfaces not caught by the old implementation"
+}
+
+declare_lint! {
+    pub INACCESSIBLE_EXTERN_CRATE,
+    Warn,
+    "use of inaccessible extern crate erroneously allowed"
+}
+
+declare_lint! {
+    pub INVALID_TYPE_PARAM_DEFAULT,
+    Warn,
+    "type parameter default erroneously allowed in invalid location"
+}
+
+declare_lint! {
+    pub ILLEGAL_FLOATING_POINT_CONSTANT_PATTERN,
+    Warn,
+    "floating-point constants cannot be used in patterns"
+}
+
+declare_lint! {
+    pub ILLEGAL_STRUCT_OR_ENUM_CONSTANT_PATTERN,
+    Warn,
+    "constants of struct or enum type can only be used in a pattern if \
+     the struct or enum has `#[derive(PartialEq, Eq)]`"
+}
+
+declare_lint! {
+    pub MATCH_OF_UNIT_VARIANT_VIA_PAREN_DOTDOT,
+    Deny,
+    "unit struct or enum variant erroneously allowed to match via path::ident(..)"
+}
+
+declare_lint! {
+    pub RAW_POINTER_DERIVE,
+    Warn,
+    "uses of #[derive] with raw pointers are rarely correct"
+}
+
+declare_lint! {
+    pub TRANSMUTE_FROM_FN_ITEM_TYPES,
+    Warn,
+    "transmute from function item type to pointer-sized type erroneously allowed"
+}
+
+declare_lint! {
+    pub OVERLAPPING_INHERENT_IMPLS,
+    Warn,
+    "two overlapping inherent impls define an item with the same name were erroneously allowed"
+}
+
+declare_lint! {
+    pub RENAMED_AND_REMOVED_LINTS,
+    Warn,
+    "lints that have been renamed or removed"
+}
+
+declare_lint! {
+    pub SUPER_OR_SELF_IN_GLOBAL_PATH,
+    Warn,
+    "detects super or self keywords at the beginning of global path"
+}
+
 /// Does nothing as a lint pass, but registers some `Lint`s
 /// which are used by other parts of the compiler.
 #[derive(Copy, Clone)]
@@ -141,7 +209,18 @@ impl LintPass for HardwiredLints {
             FAT_PTR_TRANSMUTES,
             TRIVIAL_CASTS,
             TRIVIAL_NUMERIC_CASTS,
-            CONST_ERR
+            PRIVATE_IN_PUBLIC,
+            INACCESSIBLE_EXTERN_CRATE,
+            INVALID_TYPE_PARAM_DEFAULT,
+            ILLEGAL_FLOATING_POINT_CONSTANT_PATTERN,
+            ILLEGAL_STRUCT_OR_ENUM_CONSTANT_PATTERN,
+            MATCH_OF_UNIT_VARIANT_VIA_PAREN_DOTDOT,
+            CONST_ERR,
+            RAW_POINTER_DERIVE,
+            TRANSMUTE_FROM_FN_ITEM_TYPES,
+            OVERLAPPING_INHERENT_IMPLS,
+            RENAMED_AND_REMOVED_LINTS,
+            SUPER_OR_SELF_IN_GLOBAL_PATH
         )
     }
 }

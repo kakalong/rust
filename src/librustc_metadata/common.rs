@@ -73,6 +73,7 @@ pub const tag_crate_dep: usize = 0x35;
 
 pub const tag_crate_hash: usize = 0x103; // top-level only
 pub const tag_crate_crate_name: usize = 0x104; // top-level only
+pub const tag_crate_disambiguator: usize = 0x113; // top-level only
 
 pub const tag_crate_dep_crate_name: usize = 0x36;
 pub const tag_crate_dep_hash: usize = 0x37;
@@ -85,13 +86,10 @@ pub const tag_item_trait_ref: usize = 0x3b;
 // discriminator value for variants
 pub const tag_disr_val: usize = 0x3c;
 
-// used to encode ast_map::PathElem
-pub const tag_path: usize = 0x3d;
-pub const tag_path_len: usize = 0x3e;
-pub const tag_path_elem_mod: usize = 0x3f;
-pub const tag_path_elem_name: usize = 0x40;
-pub const tag_item_field: usize = 0x41;
+// GAP 0x3d, 0x3e, 0x3f, 0x40
 
+pub const tag_item_field: usize = 0x41;
+// GAP 0x42
 pub const tag_item_variances: usize = 0x43;
 /*
   trait items contain tag_item_trait_item elements,
@@ -120,7 +118,8 @@ enum_from_u32! {
 
         tag_tree = 0x51,
 
-        // GAP 0x52
+        tag_mir = 0x52,
+
         tag_table = 0x53,
         // GAP 0x54, 0x55
         tag_table_def = 0x56,
@@ -222,6 +221,8 @@ pub const tag_polarity: usize = 0x9d;
 pub const tag_macro_defs: usize = 0x10e; // top-level only
 pub const tag_macro_def: usize = 0x9e;
 pub const tag_macro_def_body: usize = 0x9f;
+pub const tag_macro_def_span_lo: usize = 0xa8;
+pub const tag_macro_def_span_hi: usize = 0xa9;
 
 pub const tag_paren_sugar: usize = 0xa0;
 
@@ -235,6 +236,12 @@ pub const tag_defaulted_trait: usize = 0xa4;
 pub const tag_impl_coerce_unsized_kind: usize = 0xa5;
 
 pub const tag_items_data_item_constness: usize = 0xa6;
+
+pub const tag_items_data_item_deprecation: usize = 0xa7;
+
+pub const tag_items_data_item_defaultness: usize = 0xa8;
+
+pub const tag_items_data_parent_impl: usize = 0xa9;
 
 pub const tag_rustc_version: usize = 0x10f;
 pub fn rustc_version() -> String {

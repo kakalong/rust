@@ -11,7 +11,6 @@
 // Check that placement in respects unstable code checks.
 
 #![feature(placement_in_syntax)]
-#![feature(core)]
 
 extern crate core;
 
@@ -19,9 +18,6 @@ fn main() {
     use std::boxed::HEAP; //~ ERROR use of unstable library feature
 
     let _ = HEAP <- { //~ ERROR use of unstable library feature
-        ::core::raw::Slice { //~ ERROR use of unstable library feature
-            data: &42, //~ ERROR use of unstable library feature
-            len: 1 //~ ERROR use of unstable library feature
-        }
+        HEAP //~ ERROR use of unstable library feature
     };
 }

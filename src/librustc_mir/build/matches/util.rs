@@ -21,7 +21,8 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                                    -> Vec<MatchPair<'pat, 'tcx>> {
         subpatterns.iter()
                    .map(|fieldpat| {
-                       let lvalue = lvalue.clone().field(fieldpat.field);
+                       let lvalue = lvalue.clone().field(fieldpat.field,
+                                                         fieldpat.pattern.ty);
                        MatchPair::new(lvalue, &fieldpat.pattern)
                    })
                    .collect()
@@ -31,14 +32,18 @@ impl<'a,'tcx> Builder<'a,'tcx> {
     /// this function converts the prefix (`x`, `y`) and suffix (`z`) into
     /// distinct match pairs:
     ///
+    /// ```rust,ignore
     ///     lv[0 of 3] @ x  // see ProjectionElem::ConstantIndex (and its Debug impl)
     ///     lv[1 of 3] @ y  // to explain the `[x of y]` notation
     ///     lv[-1 of 3] @ z
+    /// ```
     ///
     /// If a slice like `s` is present, then the function also creates
     /// a temporary like:
     ///
+    /// ```rust,ignore
     ///     tmp0 = lv[2..-1] // using the special Rvalue::Slice
+    /// ```
     ///
     /// and creates a match pair `tmp0 @ s`
     pub fn prefix_suffix_slice<'pat>(&mut self,
@@ -60,7 +65,8 @@ impl<'a,'tcx> Builder<'a,'tcx> {
                 from_end: suffix_len,
             };
             let temp = self.temp(slice.ty.clone()); // no need to schedule drop, temp is always copy
-            self.cfg.push_assign(block, slice.span, &temp, rvalue);
+            let scope_id = self.innermost_scope_id();
+            self.cfg.push_assign(block, scope_id, slice.span, &temp, rvalue);
             match_pairs.push(MatchPair::new(temp, slice));
         }
 
@@ -117,6 +123,7 @@ impl<'pat, 'tcx> MatchPair<'pat, 'tcx> {
         MatchPair {
             lvalue: lvalue,
             pattern: pattern,
+            slice_len_checked: false,
         }
     }
 }

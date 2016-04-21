@@ -44,19 +44,18 @@ use super::FnCtxt;
 use super::structurally_resolved_type;
 
 use lint;
-use middle::def_id::DefId;
-use middle::ty::{self, Ty, HasTypeFlags};
-use middle::ty::cast::{CastKind, CastTy};
+use hir::def_id::DefId;
+use rustc::ty::{self, Ty, TypeFoldable};
+use rustc::ty::cast::{CastKind, CastTy};
 use syntax::codemap::Span;
-use rustc_front::hir;
+use rustc::hir;
 use syntax::ast;
-use syntax::ast::UintTy::TyU8;
 
 
 /// Reifies a cast check to be checked once we have full type information for
 /// a function context.
 pub struct CastCheck<'tcx> {
-    expr: hir::Expr,
+    expr: &'tcx hir::Expr,
     expr_ty: Ty<'tcx>,
     cast_ty: Ty<'tcx>,
     span: Span,
@@ -101,6 +100,8 @@ enum CastError {
     CastToBool,
     CastToChar,
     DifferingKinds,
+    /// Cast of thin to fat raw ptr (eg. `*const () as *const [u8]`)
+    SizedUnsizedCast,
     IllegalCast,
     NeedViaPtr,
     NeedViaThinPtr,
@@ -110,7 +111,7 @@ enum CastError {
 }
 
 impl<'tcx> CastCheck<'tcx> {
-    pub fn new(expr: hir::Expr, expr_ty: Ty<'tcx>, cast_ty: Ty<'tcx>, span: Span)
+    pub fn new(expr: &'tcx hir::Expr, expr_ty: Ty<'tcx>, cast_ty: Ty<'tcx>, span: Span)
                -> CastCheck<'tcx> {
         CastCheck {
             expr: expr,
@@ -127,23 +128,25 @@ impl<'tcx> CastCheck<'tcx> {
             CastError::NeedViaThinPtr |
             CastError::NeedViaInt |
             CastError::NeedViaUsize => {
-                fcx.type_error_message(self.span, |actual| {
+                fcx.type_error_struct(self.span, |actual| {
                     format!("casting `{}` as `{}` is invalid",
                             actual,
                             fcx.infcx().ty_to_string(self.cast_ty))
-                }, self.expr_ty, None);
-                fcx.ccx.tcx.sess.fileline_help(self.span,
-                    &format!("cast through {} first", match e {
-                        CastError::NeedViaPtr => "a raw pointer",
-                        CastError::NeedViaThinPtr => "a thin pointer",
-                        CastError::NeedViaInt => "an integer",
-                        CastError::NeedViaUsize => "a usize",
-                        _ => unreachable!()
-                }));
+                }, self.expr_ty, None)
+                    .fileline_help(self.span,
+                        &format!("cast through {} first", match e {
+                            CastError::NeedViaPtr => "a raw pointer",
+                            CastError::NeedViaThinPtr => "a thin pointer",
+                            CastError::NeedViaInt => "an integer",
+                            CastError::NeedViaUsize => "a usize",
+                            _ => bug!()
+                        }))
+                    .emit();
             }
             CastError::CastToBool => {
-                span_err!(fcx.tcx().sess, self.span, E0054, "cannot cast as `bool`");
-                fcx.ccx.tcx.sess.fileline_help(self.span, "compare with zero instead");
+                struct_span_err!(fcx.tcx().sess, self.span, E0054, "cannot cast as `bool`")
+                    .fileline_help(self.span, "compare with zero instead")
+                    .emit();
             }
             CastError::CastToChar => {
                 fcx.type_error_message(self.span, |actual| {
@@ -164,13 +167,21 @@ impl<'tcx> CastCheck<'tcx> {
                             fcx.infcx().ty_to_string(self.cast_ty))
                 }, self.expr_ty, None);
             }
-            CastError::DifferingKinds => {
+            CastError::SizedUnsizedCast => {
                 fcx.type_error_message(self.span, |actual| {
+                    format!("cannot cast thin pointer `{}` to fat pointer `{}`",
+                            actual,
+                            fcx.infcx().ty_to_string(self.cast_ty))
+                }, self.expr_ty, None)
+            }
+            CastError::DifferingKinds => {
+                fcx.type_error_struct(self.span, |actual| {
                     format!("casting `{}` as `{}` is invalid",
                             actual,
                             fcx.infcx().ty_to_string(self.cast_ty))
-                }, self.expr_ty, None);
-                fcx.ccx.tcx.sess.fileline_note(self.span, "vtable kinds may not match");
+                }, self.expr_ty, None)
+                    .fileline_note(self.span, "vtable kinds may not match")
+                    .emit();
             }
         }
     }
@@ -227,12 +238,26 @@ impl<'tcx> CastCheck<'tcx> {
     /// can return Ok and create type errors in the fcx rather than returning
     /// directly. coercion-cast is handled in check instead of here.
     fn do_check<'a>(&self, fcx: &FnCtxt<'a, 'tcx>) -> Result<CastKind, CastError> {
-        use middle::ty::cast::IntTy::*;
-        use middle::ty::cast::CastTy::*;
+        use rustc::ty::cast::IntTy::*;
+        use rustc::ty::cast::CastTy::*;
 
         let (t_from, t_cast) = match (CastTy::from_ty(self.expr_ty),
                                       CastTy::from_ty(self.cast_ty)) {
             (Some(t_from), Some(t_cast)) => (t_from, t_cast),
+            // Function item types may need to be reified before casts.
+            (None, Some(t_cast)) => {
+                if let ty::TyFnDef(_, _, f) = self.expr_ty.sty {
+                    // Attempt a coercion to a fn pointer type.
+                    let res = coercion::try(fcx, self.expr,
+                                            fcx.tcx().mk_ty(ty::TyFnPtr(f)));
+                    if !res.is_ok() {
+                        return Err(CastError::NonScalar);
+                    }
+                    (FnPtr, t_cast)
+                } else {
+                    return Err(CastError::NonScalar);
+                }
+            }
             _ => {
                 return Err(CastError::NonScalar)
             }
@@ -246,7 +271,7 @@ impl<'tcx> CastCheck<'tcx> {
             (_, Int(Bool)) => Err(CastError::CastToBool),
 
             // * -> Char
-            (Int(U(ast::TyU8)), Int(Char)) => Ok(CastKind::U8CharCast), // u8-char-cast
+            (Int(U(ast::UintTy::U8)), Int(Char)) => Ok(CastKind::U8CharCast), // u8-char-cast
             (_, Int(Char)) => Err(CastError::CastToChar),
 
             // prim -> float,ptr
@@ -296,7 +321,7 @@ impl<'tcx> CastCheck<'tcx> {
 
         // sized -> unsized? report invalid cast (don't complain about vtable kinds)
         if fcx.type_is_known_to_be_sized(m_expr.ty, self.span) {
-            return Err(CastError::IllegalCast);
+            return Err(CastError::SizedUnsizedCast);
         }
 
         // vtable kinds must match
@@ -374,14 +399,7 @@ impl<'tcx> CastCheck<'tcx> {
     }
 
     fn try_coercion_cast<'a>(&self, fcx: &FnCtxt<'a, 'tcx>) -> bool {
-        if let Ok(()) = coercion::mk_assignty(fcx,
-                                              &self.expr,
-                                              self.expr_ty,
-                                              self.cast_ty) {
-            true
-        } else {
-            false
-        }
+        coercion::try(fcx, self.expr, self.cast_ty).is_ok()
     }
 
 }

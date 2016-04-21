@@ -8,9 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Unicode string slices
+//! Unicode string slices.
 //!
-//! *[See also the `str` primitive type](../primitive.str.html).*
+//! *[See also the `str` primitive type](../../std/primitive.str.html).*
 
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -19,10 +19,6 @@
 // It's cleaner to just turn off the unused_imports warning than to fix them.
 #![allow(unused_imports)]
 
-use core::clone::Clone;
-use core::iter::{Iterator, Extend};
-use core::option::Option::{self, Some, None};
-use core::result::Result;
 use core::str as core_str;
 use core::str::pattern::Pattern;
 use core::str::pattern::{Searcher, ReverseSearcher, DoubleEndedSearcher};
@@ -116,17 +112,22 @@ impl<S: Borrow<str>> SliceConcatExt<str> for [S] {
     }
 }
 
+/// Deprecated, renamed to EncodeUtf16
+#[unstable(feature = "str_utf16", issue = "27714")]
+#[rustc_deprecated(since = "1.8.0", reason = "renamed to EncodeUtf16")]
+pub type Utf16Units<'a> = EncodeUtf16<'a>;
+
 /// External iterator for a string's UTF-16 code units.
 ///
 /// For use with the `std::iter` module.
 #[derive(Clone)]
-#[unstable(feature = "str_utf16", issue = "27714")]
-pub struct Utf16Units<'a> {
+#[stable(feature = "encode_utf16", since = "1.8.0")]
+pub struct EncodeUtf16<'a> {
     encoder: Utf16Encoder<Chars<'a>>,
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> Iterator for Utf16Units<'a> {
+impl<'a> Iterator for EncodeUtf16<'a> {
     type Item = u16;
 
     #[inline]
@@ -227,8 +228,6 @@ impl str {
     /// # Examples
     ///
     /// ```
-    /// #![feature(str_char)]
-    ///
     /// let s = "Löwe 老虎 Léopard";
     /// assert!(s.is_char_boundary(0));
     /// // start of `老`
@@ -241,12 +240,7 @@ impl str {
     /// // third byte of `老`
     /// assert!(!s.is_char_boundary(8));
     /// ```
-    #[unstable(feature = "str_char",
-               reason = "it is unclear whether this method pulls its weight \
-                         with the existence of the char_indices iterator or \
-                         this method may want to be replaced with checked \
-                         slicing",
-               issue = "27754")]
+    #[stable(feature = "is_char_boundary", since = "1.9.0")]
     #[inline]
     pub fn is_char_boundary(&self, index: usize) -> bool {
         core_str::StrExt::is_char_boundary(self, index)
@@ -271,8 +265,10 @@ impl str {
     /// Converts a string slice to a raw pointer.
     ///
     /// As string slices are a slice of bytes, the raw pointer points to a
-    /// `u8`. This pointer will be pointing to the first byte of the string
+    /// [`u8`]. This pointer will be pointing to the first byte of the string
     /// slice.
+    ///
+    /// [`u8`]: primitive.u8.html
     ///
     /// # Examples
     ///
@@ -302,10 +298,10 @@ impl str {
     /// # Safety
     ///
     /// Callers of this function are responsible that three preconditions are
-    /// satisifed:
+    /// satisfied:
     ///
     /// * `begin` must come before `end`.
-    /// * `begin` and `end` must be bye positions within the string slice.
+    /// * `begin` and `end` must be byte positions within the string slice.
     /// * `begin` and `end` must lie on UTF-8 sequence boundaries.
     ///
     /// # Examples
@@ -345,10 +341,10 @@ impl str {
     /// # Safety
     ///
     /// Callers of this function are responsible that three preconditions are
-    /// satisifed:
+    /// satisfied:
     ///
     /// * `begin` must come before `end`.
-    /// * `begin` and `end` must be bye positions within the string slice.
+    /// * `begin` and `end` must be byte positions within the string slice.
     /// * `begin` and `end` must lie on UTF-8 sequence boundaries.
     #[stable(feature = "str_slice_mut", since = "1.5.0")]
     #[inline]
@@ -371,6 +367,7 @@ impl str {
     ///
     /// ```
     /// #![feature(str_char)]
+    /// #![allow(deprecated)]
     ///
     /// use std::str::CharRange;
     ///
@@ -405,6 +402,9 @@ impl str {
                          removed altogether",
                issue = "27754")]
     #[inline]
+    #[rustc_deprecated(reason = "use slicing plus chars() plus len_utf8",
+                       since = "1.9.0")]
+    #[allow(deprecated)]
     pub fn char_range_at(&self, start: usize) -> CharRange {
         core_str::StrExt::char_range_at(self, start)
     }
@@ -429,6 +429,7 @@ impl str {
     ///
     /// ```
     /// #![feature(str_char)]
+    /// #![allow(deprecated)]
     ///
     /// use std::str::CharRange;
     ///
@@ -463,6 +464,9 @@ impl str {
                          eventually removed altogether",
                issue = "27754")]
     #[inline]
+    #[rustc_deprecated(reason = "use slicing plus chars().rev() plus len_utf8",
+                       since = "1.9.0")]
+    #[allow(deprecated)]
     pub fn char_range_at_reverse(&self, start: usize) -> CharRange {
         core_str::StrExt::char_range_at_reverse(self, start)
     }
@@ -478,6 +482,7 @@ impl str {
     ///
     /// ```
     /// #![feature(str_char)]
+    /// #![allow(deprecated)]
     ///
     /// let s = "abπc";
     /// assert_eq!(s.char_at(1), 'b');
@@ -492,6 +497,9 @@ impl str {
                          subslice",
                issue = "27754")]
     #[inline]
+    #[allow(deprecated)]
+    #[rustc_deprecated(reason = "use slicing plus chars()",
+                       since = "1.9.0")]
     pub fn char_at(&self, i: usize) -> char {
         core_str::StrExt::char_at(self, i)
     }
@@ -508,6 +516,7 @@ impl str {
     ///
     /// ```
     /// #![feature(str_char)]
+    /// #![allow(deprecated)]
     ///
     /// let s = "abπc";
     /// assert_eq!(s.char_at_reverse(1), 'a');
@@ -520,6 +529,9 @@ impl str {
                          cases generate panics",
                issue = "27754")]
     #[inline]
+    #[rustc_deprecated(reason = "use slicing plus chars().rev()",
+                       since = "1.9.0")]
+    #[allow(deprecated)]
     pub fn char_at_reverse(&self, i: usize) -> char {
         core_str::StrExt::char_at_reverse(self, i)
     }
@@ -538,6 +550,7 @@ impl str {
     ///
     /// ```
     /// #![feature(str_char)]
+    /// #![allow(deprecated)]
     ///
     /// let s = "Łódź"; // \u{141}o\u{301}dz\u{301}
     /// let (c, s1) = s.slice_shift_char().unwrap();
@@ -556,6 +569,9 @@ impl str {
                          and/or char_indices iterators",
                issue = "27754")]
     #[inline]
+    #[rustc_deprecated(reason = "use chars() plus Chars::as_str",
+                       since = "1.9.0")]
+    #[allow(deprecated)]
     pub fn slice_shift_char(&self) -> Option<(char, &str)> {
         core_str::StrExt::slice_shift_char(self)
     }
@@ -618,9 +634,9 @@ impl str {
     /// Basic usage:
     ///
     /// ```
-    /// let s = "Per Martin-Löf";
+    /// let mut s = "Per Martin-Löf".to_string();
     ///
-    /// let (first, last) = s.split_at(3);
+    /// let (first, last) = s.split_at_mut(3);
     ///
     /// assert_eq!("Per", first);
     /// assert_eq!(" Martin-Löf", last);
@@ -640,7 +656,7 @@ impl str {
     /// Value, and may not match your idea of what a 'character' is. Iteration
     /// over grapheme clusters may be what you actually want.
     ///
-    /// [`char`]: ../primitive.char.html
+    /// [`char`]: primitive.char.html
     ///
     /// # Examples
     ///
@@ -665,7 +681,7 @@ impl str {
     /// assert_eq!(None, chars.next());
     /// ```
     ///
-    /// Remember, `char`s may not match your human intuition about characters:
+    /// Remember, [`char`]s may not match your human intuition about characters:
     ///
     /// ```
     /// let y = "y̆";
@@ -682,15 +698,17 @@ impl str {
     pub fn chars(&self) -> Chars {
         core_str::StrExt::chars(self)
     }
-    /// Returns an iterator over the `char`s of a string slice, and their
+    /// Returns an iterator over the [`char`]s of a string slice, and their
     /// positions.
     ///
     /// As a string slice consists of valid UTF-8, we can iterate through a
-    /// string slice by `char`. This method returns an iterator of both
-    /// these `char`s, as well as their byte positions.
+    /// string slice by [`char`]. This method returns an iterator of both
+    /// these [`char`]s, as well as their byte positions.
     ///
-    /// The iterator yields tuples. The position is first, the `char` is
+    /// The iterator yields tuples. The position is first, the [`char`] is
     /// second.
+    ///
+    /// [`char`]: primitive.char.html
     ///
     /// # Examples
     ///
@@ -715,7 +733,7 @@ impl str {
     /// assert_eq!(None, char_indices.next());
     /// ```
     ///
-    /// Remember, `char`s may not match your human intuition about characters:
+    /// Remember, [`char`]s may not match your human intuition about characters:
     ///
     /// ```
     /// let y = "y̆";
@@ -853,13 +871,22 @@ impl str {
     #[unstable(feature = "str_utf16",
                reason = "this functionality may only be provided by libunicode",
                issue = "27714")]
+    #[rustc_deprecated(since = "1.8.0", reason = "renamed to encode_utf16")]
+    #[allow(deprecated)]
     pub fn utf16_units(&self) -> Utf16Units {
         Utf16Units { encoder: Utf16Encoder::new(self[..].chars()) }
     }
 
-    /// Returns `true` if the given `&str` is a sub-slice of this string slice.
+    /// Returns an iterator of `u16` over the string encoded as UTF-16.
+    #[stable(feature = "encode_utf16", since = "1.8.0")]
+    pub fn encode_utf16(&self) -> EncodeUtf16 {
+        EncodeUtf16 { encoder: Utf16Encoder::new(self[..].chars()) }
+    }
+
+    /// Returns `true` if the given pattern matches a sub-slice of
+    /// this string slice.
     ///
-    /// Returns `false` if it's not.
+    /// Returns `false` if it does not.
     ///
     /// # Examples
     ///
@@ -876,9 +903,10 @@ impl str {
         core_str::StrExt::contains(self, pat)
     }
 
-    /// Returns `true` if the given `&str` is a prefix of this string slice.
+    /// Returns `true` if the given pattern matches a prefix of this
+    /// string slice.
     ///
-    /// Returns `false` if it's not.
+    /// Returns `false` if it does not.
     ///
     /// # Examples
     ///
@@ -895,9 +923,10 @@ impl str {
         core_str::StrExt::starts_with(self, pat)
     }
 
-    /// Returns `true` if the given `&str` is a suffix of this string slice.
+    /// Returns `true` if the given pattern matches a suffix of this
+    /// string slice.
     ///
-    /// Returns `false` if not.
+    /// Returns `false` if it does not.
     ///
     /// # Examples
     ///
@@ -919,12 +948,13 @@ impl str {
     /// Returns the byte index of the first character of this string slice that
     /// matches the pattern.
     ///
-    /// Returns `None` if the pattern doesn't match.
+    /// Returns [`None`] if the pattern doesn't match.
     ///
     /// The pattern can be a `&str`, [`char`], or a closure that determines if
     /// a character matches.
     ///
     /// [`char`]: primitive.char.html
+    /// [`None`]: option/enum.Option.html#variant.None
     ///
     /// # Examples
     ///
@@ -963,12 +993,13 @@ impl str {
     /// Returns the byte index of the last character of this string slice that
     /// matches the pattern.
     ///
-    /// Returns `None` if the pattern doesn't match.
+    /// Returns [`None`] if the pattern doesn't match.
     ///
     /// The pattern can be a `&str`, [`char`], or a closure that determines if
     /// a character matches.
     ///
     /// [`char`]: primitive.char.html
+    /// [`None`]: option/enum.Option.html#variant.None
     ///
     /// # Examples
     ///
@@ -1188,13 +1219,17 @@ impl str {
     /// An iterator over substrings of `self`, separated by characters
     /// matched by a pattern and yielded in reverse order.
     ///
-    /// The pattern can be a simple `&str`, `char`, or a closure that
+    /// The pattern can be a simple `&str`, [`char`], or a closure that
     /// determines the split.
     /// Additional libraries might provide more complex patterns like
     /// regular expressions.
     ///
-    /// Equivalent to `split`, except that the trailing substring is
+    /// [`char`]: primitive.char.html
+    ///
+    /// Equivalent to [`split()`], except that the trailing substring is
     /// skipped if empty.
+    ///
+    /// [`split()`]: #method.split
     ///
     /// This method can be used for string data that is _terminated_,
     /// rather than _separated_ by a pattern.
@@ -1381,7 +1416,7 @@ impl str {
     ///
     /// For iterating from the front, the [`matches()`] method can be used.
     ///
-    /// [`matches`]: #method.matches
+    /// [`matches()`]: #method.matches
     ///
     /// # Examples
     ///
@@ -1458,7 +1493,7 @@ impl str {
     /// # Iterator behavior
     ///
     /// The returned iterator requires that the pattern supports a reverse
-    /// search, and it will be a `[DoubleEndedIterator]` if a forward/reverse
+    /// search, and it will be a [`DoubleEndedIterator`] if a forward/reverse
     /// search yields the same elements.
     ///
     /// [`DoubleEndedIterator`]: iter/trait.DoubleEndedIterator.html
@@ -1512,6 +1547,13 @@ impl str {
     /// 'Whitespace' is defined according to the terms of the Unicode Derived
     /// Core Property `White_Space`.
     ///
+    /// # Text directionality
+    ///
+    /// A string is a sequence of bytes. 'Left' in this context means the first
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _right_ side, not the left.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -1520,6 +1562,16 @@ impl str {
     /// let s = " Hello\tworld\t";
     ///
     /// assert_eq!("Hello\tworld\t", s.trim_left());
+    /// ```
+    ///
+    /// Directionality:
+    ///
+    /// ```
+    /// let s = "  English";
+    /// assert!(Some('E') == s.trim_left().chars().next());
+    ///
+    /// let s = "  עברית";
+    /// assert!(Some('ע') == s.trim_left().chars().next());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn trim_left(&self) -> &str {
@@ -1531,6 +1583,13 @@ impl str {
     /// 'Whitespace' is defined according to the terms of the Unicode Derived
     /// Core Property `White_Space`.
     ///
+    /// # Text directionality
+    ///
+    /// A string is a sequence of bytes. 'Right' in this context means the last
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _left_ side, not the right.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -1539,6 +1598,16 @@ impl str {
     /// let s = " Hello\tworld\t";
     ///
     /// assert_eq!(" Hello\tworld", s.trim_right());
+    /// ```
+    ///
+    /// Directionality:
+    ///
+    /// ```
+    /// let s = "English  ";
+    /// assert!(Some('h') == s.trim_right().chars().rev().next());
+    ///
+    /// let s = "עברית  ";
+    /// assert!(Some('ת') == s.trim_right().chars().rev().next());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn trim_right(&self) -> &str {
@@ -1551,7 +1620,7 @@ impl str {
     /// The pattern can be a `&str`, [`char`], or a closure that determines
     /// if a character matches.
     ///
-    /// [`char`]: primtive.char.html
+    /// [`char`]: primitive.char.html
     ///
     /// # Examples
     ///
@@ -1585,6 +1654,13 @@ impl str {
     ///
     /// [`char`]: primitive.char.html
     ///
+    /// # Text directionality
+    ///
+    /// A string is a sequence of bytes. 'Left' in this context means the first
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _right_ side, not the left.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -1608,6 +1684,13 @@ impl str {
     /// determines if a character matches.
     ///
     /// [`char`]: primitive.char.html
+    ///
+    /// # Text directionality
+    ///
+    /// A string is a sequence of bytes. 'Right' in this context means the last
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _left_ side, not the right.
     ///
     /// # Examples
     ///
@@ -1643,12 +1726,14 @@ impl str {
     ///
     /// `parse()` can parse any type that implements the [`FromStr`] trait.
     ///
-    /// [`FromStr`]: trait.FromStr.html
+    /// [`FromStr`]: str/trait.FromStr.html
     ///
-    /// # Failure
+    /// # Errors
     ///
-    /// Will return `Err` if it's not possible to parse this string slice into
+    /// Will return [`Err`] if it's not possible to parse this string slice into
     /// the desired type.
+    ///
+    /// [`Err`]: str/trait.FromStr.html#associatedtype.Err
     ///
     /// # Example
     ///
@@ -1660,7 +1745,7 @@ impl str {
     /// assert_eq!(4, four);
     /// ```
     ///
-    /// Using the 'turbofish' instead of annotationg `four`:
+    /// Using the 'turbofish' instead of annotating `four`:
     ///
     /// ```
     /// let four = "4".parse::<u32>();
@@ -1681,11 +1766,11 @@ impl str {
         core_str::StrExt::parse(self)
     }
 
-    /// Replaces all occurrences of one string with another.
+    /// Replaces all matches of a pattern with another string.
     ///
     /// `replace` creates a new [`String`], and copies the data from this string slice into it.
-    /// While doing so, it attempts to find a sub-`&str`. If it finds it, it replaces it with
-    /// the replacement string slice.
+    /// While doing so, it attempts to find matches of a pattern. If it finds any, it
+    /// replaces them with the replacement string slice.
     ///
     /// [`String`]: string/struct.String.html
     ///
@@ -1699,14 +1784,14 @@ impl str {
     /// assert_eq!("this is new", s.replace("old", "new"));
     /// ```
     ///
-    /// When a `&str` isn't found:
+    /// When the pattern doesn't match:
     ///
     /// ```
     /// let s = "this is old";
     /// assert_eq!(s, s.replace("cookie monster", "little lamb"));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn replace(&self, from: &str, to: &str) -> String {
+    pub fn replace<'a, P: Pattern<'a>>(&'a self, from: P, to: &str) -> String {
         let mut result = String::new();
         let mut last_end = 0;
         for (start, part) in self.match_indices(from) {
@@ -1718,10 +1803,12 @@ impl str {
         result
     }
 
-    /// Returns the lowercase equivalent of this string slice, as a new `String`.
+    /// Returns the lowercase equivalent of this string slice, as a new [`String`].
     ///
     /// 'Lowercase' is defined according to the terms of the Unicode Derived Core Property
     /// `Lowercase`.
+    ///
+    /// [`String`]: string/struct.String.html
     ///
     /// # Examples
     ///
@@ -1761,7 +1848,7 @@ impl str {
                 // Σ maps to σ, except at the end of a word where it maps to ς.
                 // This is the only conditional (contextual) but language-independent mapping
                 // in `SpecialCasing.txt`,
-                // so hard-code it rather than have a generic "condition" mechanim.
+                // so hard-code it rather than have a generic "condition" mechanism.
                 // See https://github.com/rust-lang/rust/issues/26035
                 map_uppercase_sigma(self, i, &mut s)
             } else {
@@ -1792,10 +1879,12 @@ impl str {
         }
     }
 
-    /// Returns the uppercase equivalent of this string slice, as a new `String`.
+    /// Returns the uppercase equivalent of this string slice, as a new [`String`].
     ///
     /// 'Uppercase' is defined according to the terms of the Unicode Derived Core Property
     /// `Uppercase`.
+    ///
+    /// [`String`]: string/struct.String.html
     ///
     /// # Examples
     ///
@@ -1837,7 +1926,9 @@ impl str {
         self.chars().flat_map(|c| c.escape_unicode()).collect()
     }
 
-    /// Converts a `Box<str>` into a `String` without copying or allocating.
+    /// Converts a `Box<str>` into a [`String`] without copying or allocating.
+    ///
+    /// [`String`]: string/struct.String.html
     ///
     /// # Examples
     ///

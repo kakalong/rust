@@ -79,6 +79,7 @@ struct Custom {
 /// exhaustively match against it.
 #[derive(Copy, PartialEq, Eq, Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[allow(deprecated)]
 pub enum ErrorKind {
     /// An entity was not found, often a file.
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -155,8 +156,8 @@ pub enum ErrorKind {
     /// This typically means that an operation could only succeed if it read a
     /// particular number of bytes but only a smaller number of bytes could be
     /// read.
-    #[unstable(feature = "read_exact", reason = "recently added", issue = "27585")]
-    UnexpectedEOF,
+    #[stable(feature = "read_exact", since = "1.6.0")]
+    UnexpectedEof,
 
     /// Any I/O error not part of this list.
     #[unstable(feature = "io_error_internals",
@@ -306,7 +307,27 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn description(&self) -> &str {
         match self.repr {
-            Repr::Os(..) => "os error",
+            Repr::Os(..) => match self.kind() {
+                ErrorKind::NotFound => "entity not found",
+                ErrorKind::PermissionDenied => "permission denied",
+                ErrorKind::ConnectionRefused => "connection refused",
+                ErrorKind::ConnectionReset => "connection reset",
+                ErrorKind::ConnectionAborted => "connection aborted",
+                ErrorKind::NotConnected => "not connected",
+                ErrorKind::AddrInUse => "address in use",
+                ErrorKind::AddrNotAvailable => "address not available",
+                ErrorKind::BrokenPipe => "broken pipe",
+                ErrorKind::AlreadyExists => "entity already exists",
+                ErrorKind::WouldBlock => "operation would block",
+                ErrorKind::InvalidInput => "invalid input parameter",
+                ErrorKind::InvalidData => "invalid data",
+                ErrorKind::TimedOut => "timed out",
+                ErrorKind::WriteZero => "write zero",
+                ErrorKind::Interrupted => "operation interrupted",
+                ErrorKind::Other => "other os error",
+                ErrorKind::UnexpectedEof => "unexpected end of file",
+                ErrorKind::__Nonexhaustive => unreachable!()
+            },
             Repr::Custom(ref c) => c.error.description(),
         }
     }
@@ -348,7 +369,7 @@ mod test {
         struct TestError;
 
         impl fmt::Display for TestError {
-            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result {
                 Ok(())
             }
         }

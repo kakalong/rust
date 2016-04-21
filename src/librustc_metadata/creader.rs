@@ -17,12 +17,13 @@ use cstore::{self, CStore, CrateSource, MetadataBlob};
 use decoder;
 use loader::{self, CratePaths};
 
-use rustc::back::svh::Svh;
+use rustc::hir::svh::Svh;
+use rustc::dep_graph::DepNode;
 use rustc::session::{config, Session};
 use rustc::session::search_paths::PathKind;
-use rustc::middle::cstore::{CrateStore, validate_crate_name};
+use rustc::middle::cstore::{CrateStore, validate_crate_name, ExternCrate};
 use rustc::util::nodemap::FnvHashMap;
-use rustc::front::map as hir_map;
+use rustc::hir::map as hir_map;
 
 use std::cell::{RefCell, Cell};
 use std::path::PathBuf;
@@ -30,15 +31,14 @@ use std::rc::Rc;
 use std::fs;
 
 use syntax::ast;
-use syntax::abi;
+use syntax::abi::Abi;
 use syntax::codemap::{self, Span, mk_sp, Pos};
 use syntax::parse;
 use syntax::attr;
 use syntax::attr::AttrMetaMethods;
 use syntax::parse::token::InternedString;
-use syntax::util::small_vector::SmallVector;
-use rustc_front::intravisit::Visitor;
-use rustc_front::hir;
+use rustc::hir::intravisit::Visitor;
+use rustc::hir;
 use log;
 
 pub struct LocalCrateReader<'a, 'b:'a> {
@@ -53,6 +53,7 @@ pub struct CrateReader<'a> {
     cstore: &'a CStore,
     next_crate_num: ast::CrateNum,
     foreign_item_map: FnvHashMap<String, Vec<ast::NodeId>>,
+    local_crate_name: String,
 }
 
 impl<'a, 'b, 'hir> Visitor<'hir> for LocalCrateReader<'a, 'b> {
@@ -144,18 +145,21 @@ impl PMDSource {
 }
 
 impl<'a> CrateReader<'a> {
-    pub fn new(sess: &'a Session, cstore: &'a CStore) -> CrateReader<'a> {
+    pub fn new(sess: &'a Session,
+               cstore: &'a CStore,
+               local_crate_name: &str) -> CrateReader<'a> {
         CrateReader {
             sess: sess,
             cstore: cstore,
             next_crate_num: cstore.next_crate_num(),
             foreign_item_map: FnvHashMap(),
+            local_crate_name: local_crate_name.to_owned(),
         }
     }
 
     fn extract_crate_info(&self, i: &ast::Item) -> Option<CrateInfo> {
         match i.node {
-            ast::ItemExternCrate(ref path_opt) => {
+            ast::ItemKind::ExternCrate(ref path_opt) => {
                 debug!("resolving extern crate stmt. ident: {} path_opt: {:?}",
                        i.ident, path_opt);
                 let name = match *path_opt {
@@ -257,16 +261,49 @@ impl<'a> CrateReader<'a> {
                             metadata: &MetadataBlob) {
         let crate_rustc_version = decoder::crate_rustc_version(metadata.as_slice());
         if crate_rustc_version != Some(rustc_version()) {
-            span_err!(self.sess, span, E0514,
-                      "the crate `{}` has been compiled with {}, which is \
-                       incompatible with this version of rustc",
-                      name,
-                      crate_rustc_version
-                          .as_ref().map(|s|&**s)
-                          .unwrap_or("an old version of rustc")
-            );
-            self.sess.abort_if_errors();
+            let mut err = struct_span_fatal!(self.sess, span, E0514,
+                                             "the crate `{}` has been compiled with {}, which is \
+                                              incompatible with this version of rustc",
+                                              name,
+                                              crate_rustc_version
+                                              .as_ref().map(|s| &**s)
+                                              .unwrap_or("an old version of rustc"));
+            err.fileline_help(span, "consider removing the compiled binaries and recompiling \
+                                     with your current version of rustc");
+            err.emit();
         }
+    }
+
+    fn verify_no_symbol_conflicts(&self,
+                                  span: Span,
+                                  metadata: &MetadataBlob) {
+        let disambiguator = decoder::get_crate_disambiguator(metadata.as_slice());
+        let crate_name = decoder::get_crate_name(metadata.as_slice());
+
+        // Check for (potential) conflicts with the local crate
+        if self.local_crate_name == crate_name &&
+           self.sess.crate_disambiguator.get().as_str() == disambiguator {
+            span_fatal!(self.sess, span, E0519,
+                        "the current crate is indistinguishable from one of its \
+                         dependencies: it has the same crate-name `{}` and was \
+                         compiled with the same `-C metadata` arguments. This \
+                         will result in symbol conflicts between the two.",
+                        crate_name)
+        }
+
+        let svh = decoder::get_crate_hash(metadata.as_slice());
+        // Check for conflicts with any crate loaded so far
+        self.cstore.iter_crate_data(|_, other| {
+            if other.name() == crate_name && // same crate-name
+               other.disambiguator() == disambiguator &&  // same crate-disambiguator
+               other.hash() != svh { // but different SVH
+                span_fatal!(self.sess, span, E0523,
+                        "found two different crates with name `{}` that are \
+                         not distinguished by differing `-C metadata`. This \
+                         will result in symbol conflicts between the two.",
+                        crate_name)
+            }
+        });
     }
 
     fn register_crate(&mut self,
@@ -279,6 +316,7 @@ impl<'a> CrateReader<'a> {
                       -> (ast::CrateNum, Rc<cstore::crate_metadata>,
                           cstore::CrateSource) {
         self.verify_rustc_version(name, span, &lib.metadata);
+        self.verify_no_symbol_conflicts(span, &lib.metadata);
 
         // Claim this crate number and cache it
         let cnum = self.next_crate_num;
@@ -304,15 +342,13 @@ impl<'a> CrateReader<'a> {
 
         let cmeta = Rc::new(cstore::crate_metadata {
             name: name.to_string(),
-            local_path: RefCell::new(SmallVector::zero()),
-            local_def_path: RefCell::new(vec![]),
+            extern_crate: Cell::new(None),
             index: decoder::load_index(metadata.as_slice()),
             xref_index: decoder::load_xrefs(metadata.as_slice()),
             data: metadata,
             cnum_map: RefCell::new(cnum_map),
             cnum: cnum,
             codemap_import_info: RefCell::new(vec![]),
-            span: span,
             staged_api: staged_api,
             explicitly_linked: Cell::new(explicitly_linked),
         });
@@ -346,8 +382,7 @@ impl<'a> CrateReader<'a> {
                      span: Span,
                      kind: PathKind,
                      explicitly_linked: bool)
-                         -> (ast::CrateNum, Rc<cstore::crate_metadata>,
-                             cstore::CrateSource) {
+                     -> (ast::CrateNum, Rc<cstore::crate_metadata>, cstore::CrateSource) {
         enum LookupResult {
             Previous(ast::CrateNum),
             Loaded(loader::Library),
@@ -404,23 +439,54 @@ impl<'a> CrateReader<'a> {
         }
     }
 
+    fn update_extern_crate(&mut self,
+                           cnum: ast::CrateNum,
+                           mut extern_crate: ExternCrate)
+    {
+        let cmeta = self.cstore.get_crate_data(cnum);
+        let old_extern_crate = cmeta.extern_crate.get();
+
+        // Prefer:
+        // - something over nothing (tuple.0);
+        // - direct extern crate to indirect (tuple.1);
+        // - shorter paths to longer (tuple.2).
+        let new_rank = (true, extern_crate.direct, !extern_crate.path_len);
+        let old_rank = match old_extern_crate {
+            None => (false, false, !0),
+            Some(ref c) => (true, c.direct, !c.path_len),
+        };
+
+        if old_rank >= new_rank {
+            return; // no change needed
+        }
+
+        cmeta.extern_crate.set(Some(extern_crate));
+
+        // Propagate the extern crate info to dependencies.
+        extern_crate.direct = false;
+        for &dep_cnum in cmeta.cnum_map.borrow().values() {
+            self.update_extern_crate(dep_cnum, extern_crate);
+        }
+    }
+
     // Go through the crate metadata and load any crates that it references
     fn resolve_crate_deps(&mut self,
                           root: &Option<CratePaths>,
-                          cdata: &[u8], span : Span)
-                       -> cstore::cnum_map {
+                          cdata: &[u8],
+                          span : Span)
+                          -> cstore::cnum_map {
         debug!("resolving deps of external crate");
         // The map from crate numbers in the crate we're resolving to local crate
         // numbers
         decoder::get_crate_deps(cdata).iter().map(|dep| {
             debug!("resolving dep crate {} hash: `{}`", dep.name, dep.hash);
             let (local_cnum, _, _) = self.resolve_crate(root,
-                                                   &dep.name,
-                                                   &dep.name,
-                                                   Some(&dep.hash),
-                                                   span,
-                                                   PathKind::Dependency,
-                                                   dep.explicitly_linked);
+                                                        &dep.name,
+                                                        &dep.name,
+                                                        Some(&dep.hash),
+                                                        span,
+                                                        PathKind::Dependency,
+                                                        dep.explicitly_linked);
             (dep.cnum, local_cnum)
         }).collect()
     }
@@ -460,7 +526,7 @@ impl<'a> CrateReader<'a> {
                 load_ctxt.filesearch = self.sess.target_filesearch(PathKind::Crate);
                 load_ctxt.load_library_crate()
             }
-            None => { load_ctxt.report_load_errs(); unreachable!() },
+            None => { load_ctxt.report_load_errs(); },
         };
 
         let dylib = library.dylib.clone();
@@ -493,8 +559,8 @@ impl<'a> CrateReader<'a> {
         let source_name = format!("<{} macros>", item.ident);
         let mut macros = vec![];
         decoder::each_exported_macro(ekrate.metadata.as_slice(),
-                                     &*self.cstore.intr,
-            |name, attrs, body| {
+                                     &self.cstore.intr,
+            |name, attrs, span, body| {
                 // NB: Don't use parse::parse_tts_from_source_str because it parses with
                 // quote_depth > 0.
                 let mut p = parse::new_parser_from_source_str(&self.sess.parse_sess,
@@ -504,10 +570,13 @@ impl<'a> CrateReader<'a> {
                 let lo = p.span.lo;
                 let body = match p.parse_all_token_trees() {
                     Ok(body) => body,
-                    Err(err) => panic!(err),
+                    Err(mut err) => {
+                        err.emit();
+                        self.sess.abort_if_errors();
+                        unreachable!();
+                    }
                 };
-                let span = mk_sp(lo, p.last_span.hi);
-                p.abort_if_errors();
+                let local_span = mk_sp(lo, p.last_span.hi);
 
                 // Mark the attrs as used
                 for attr in &attrs {
@@ -518,7 +587,7 @@ impl<'a> CrateReader<'a> {
                     ident: ast::Ident::with_empty_ctxt(name),
                     attrs: attrs,
                     id: ast::DUMMY_NODE_ID,
-                    span: span,
+                    span: local_span,
                     imported_from: Some(item.ident),
                     // overridden in plugin/load.rs
                     export: false,
@@ -527,6 +596,8 @@ impl<'a> CrateReader<'a> {
 
                     body: body,
                 });
+                self.sess.imported_macro_spans.borrow_mut()
+                    .insert(local_span, (name.as_str().to_string(), span));
                 true
             }
         );
@@ -550,8 +621,7 @@ impl<'a> CrateReader<'a> {
                                   name,
                                   config::host_triple(),
                                   self.sess.opts.target_triple);
-            span_err!(self.sess, span, E0456, "{}", &message[..]);
-            self.sess.abort_if_errors();
+            span_fatal!(self.sess, span, E0456, "{}", &message[..]);
         }
 
         let registrar =
@@ -707,12 +777,15 @@ impl<'a> CrateReader<'a> {
 }
 
 impl<'a, 'b> LocalCrateReader<'a, 'b> {
-    pub fn new(sess: &'a Session, cstore: &'a CStore,
-               map: &'a hir_map::Map<'b>) -> LocalCrateReader<'a, 'b> {
+    pub fn new(sess: &'a Session,
+               cstore: &'a CStore,
+               map: &'a hir_map::Map<'b>,
+               local_crate_name: &str)
+               -> LocalCrateReader<'a, 'b> {
         LocalCrateReader {
             sess: sess,
             cstore: cstore,
-            creader: CrateReader::new(sess, cstore),
+            creader: CrateReader::new(sess, cstore, local_crate_name),
             ast_map: map,
         }
     }
@@ -720,7 +793,10 @@ impl<'a, 'b> LocalCrateReader<'a, 'b> {
     // Traverses an AST, reading all the information about use'd crates and
     // extern libraries necessary for later resolving, typechecking, linking,
     // etc.
-    pub fn read_crates(&mut self, krate: &hir::Crate) {
+    pub fn read_crates(&mut self) {
+        let _task = self.ast_map.dep_graph.in_task(DepNode::CrateReader);
+        let krate = self.ast_map.krate();
+
         self.process_crate(krate);
         krate.visit_all_items(self);
         self.creader.inject_allocator_crate();
@@ -753,19 +829,24 @@ impl<'a, 'b> LocalCrateReader<'a, 'b> {
 
                 match self.creader.extract_crate_info_hir(i) {
                     Some(info) => {
-                        let (cnum, cmeta, _) = self.creader.resolve_crate(&None,
-                                                              &info.ident,
-                                                              &info.name,
-                                                              None,
-                                                              i.span,
-                                                              PathKind::Crate,
-                                                              true);
+                        let (cnum, _, _) = self.creader.resolve_crate(&None,
+                                                                          &info.ident,
+                                                                          &info.name,
+                                                                          None,
+                                                                          i.span,
+                                                                          PathKind::Crate,
+                                                                          true);
                         let def_id = self.ast_map.local_def_id(i.id);
-                        let def_path = self.ast_map.def_path(def_id);
-                        cmeta.update_local_def_path(def_path);
-                        self.ast_map.with_path(i.id, |path| {
-                            cmeta.update_local_path(path)
-                        });
+
+                        let len = self.ast_map.def_path(def_id).data.len();
+
+                        self.creader.update_extern_crate(cnum,
+                                                         ExternCrate {
+                                                             def_id: def_id,
+                                                             span: i.span,
+                                                             direct: true,
+                                                             path_len: len,
+                                                         });
                         self.cstore.add_extern_mod_stmt_cnum(info.id, cnum);
                     }
                     None => ()
@@ -777,7 +858,7 @@ impl<'a, 'b> LocalCrateReader<'a, 'b> {
     }
 
     fn process_foreign_mod(&mut self, i: &hir::Item, fm: &hir::ForeignMod) {
-        if fm.abi == abi::Rust || fm.abi == abi::RustIntrinsic || fm.abi == abi::PlatformIntrinsic {
+        if fm.abi == Abi::Rust || fm.abi == Abi::RustIntrinsic || fm.abi == Abi::PlatformIntrinsic {
             return;
         }
 

@@ -8,9 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(missing_docs)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
+#![allow(missing_docs, bad_style)]
 
 use prelude::v1::*;
 
@@ -26,6 +24,7 @@ use time::Duration;
 pub mod backtrace;
 pub mod c;
 pub mod condvar;
+pub mod dynamic_lib;
 pub mod ext;
 pub mod fs;
 pub mod handle;
@@ -35,6 +34,7 @@ pub mod os;
 pub mod os_str;
 pub mod pipe;
 pub mod process;
+pub mod rand;
 pub mod rwlock;
 pub mod stack_overflow;
 pub mod thread;
@@ -42,7 +42,27 @@ pub mod thread_local;
 pub mod time;
 pub mod stdio;
 
-pub fn init() {}
+#[cfg(not(test))]
+pub fn init() {
+    ::alloc::oom::set_oom_handler(oom_handler);
+
+    // See comment in sys/unix/mod.rs
+    fn oom_handler() -> ! {
+        use intrinsics;
+        use ptr;
+        let msg = "fatal runtime error: out of memory\n";
+        unsafe {
+            // WriteFile silently fails if it is passed an invalid handle, so
+            // there is no need to check the result of GetStdHandle.
+            c::WriteFile(c::GetStdHandle(c::STD_ERROR_HANDLE),
+                         msg.as_ptr() as c::LPVOID,
+                         msg.len() as c::DWORD,
+                         ptr::null_mut(),
+                         ptr::null_mut());
+            intrinsics::abort();
+        }
+    }
+}
 
 pub fn decode_error_kind(errno: i32) -> ErrorKind {
     match errno as c::DWORD {

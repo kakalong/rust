@@ -8,9 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![unstable(feature = "reentrant_mutex", reason = "new API",
-            issue = "27738")]
-
 use prelude::v1::*;
 
 use fmt;
@@ -78,7 +75,7 @@ impl<T> ReentrantMutex<T> {
     /// calling this method already holds the lock, the call shall succeed without
     /// blocking.
     ///
-    /// # Failure
+    /// # Errors
     ///
     /// If another user of this mutex panicked while holding the mutex, then
     /// this call will return failure if the mutex would otherwise be
@@ -95,14 +92,14 @@ impl<T> ReentrantMutex<T> {
     ///
     /// This function does not block.
     ///
-    /// # Failure
+    /// # Errors
     ///
     /// If another user of this mutex panicked while holding the mutex, then
     /// this call will return failure if the mutex would otherwise be
     /// acquired.
     pub fn try_lock(&self) -> TryLockResult<ReentrantMutexGuard<T>> {
         if unsafe { self.inner.try_lock() } {
-            Ok(try!(ReentrantMutexGuard::new(&self)))
+            Ok(ReentrantMutexGuard::new(&self)?)
         } else {
             Err(TryLockError::WouldBlock)
         }
@@ -167,7 +164,6 @@ mod tests {
     use sys_common::remutex::{ReentrantMutex, ReentrantMutexGuard};
     use cell::RefCell;
     use sync::Arc;
-    use boxed;
     use thread;
 
     #[test]
@@ -208,13 +204,13 @@ mod tests {
     fn trylock_works() {
         let m = Arc::new(ReentrantMutex::new(()));
         let m2 = m.clone();
-        let lock = m.try_lock().unwrap();
-        let lock2 = m.try_lock().unwrap();
+        let _lock = m.try_lock().unwrap();
+        let _lock2 = m.try_lock().unwrap();
         thread::spawn(move || {
             let lock = m2.try_lock();
             assert!(lock.is_err());
         }).join().unwrap();
-        let lock3 = m.try_lock().unwrap();
+        let _lock3 = m.try_lock().unwrap();
     }
 
     pub struct Answer<'a>(pub ReentrantMutexGuard<'a, RefCell<u32>>);
@@ -233,9 +229,8 @@ mod tests {
             *lock.borrow_mut() = 1;
             let lock2 = mc.lock().unwrap();
             *lock.borrow_mut() = 2;
-            let answer = Answer(lock2);
+            let _answer = Answer(lock2);
             panic!("What the answer to my lifetimes dilemma is?");
-            drop(answer);
         }).join();
         assert!(result.is_err());
         let r = m.lock().err().unwrap().into_inner();

@@ -159,6 +159,7 @@ fn ref_map_accessor() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn ref_filter_map_accessor() {
     struct X(RefCell<Result<u32, ()>>);
     impl X {
@@ -189,6 +190,7 @@ fn ref_mut_map_accessor() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn ref_mut_filter_map_accessor() {
     struct X(RefCell<Result<u32, ()>>);
     impl X {
@@ -259,3 +261,23 @@ fn refcell_unsized() {
     let comp: &mut [i32] = &mut [4, 2, 5];
     assert_eq!(&*cell.borrow(), comp);
 }
+
+#[test]
+fn refcell_ref_coercion() {
+    let cell: RefCell<[i32; 3]> = RefCell::new([1, 2, 3]);
+    {
+        let mut cellref: RefMut<[i32; 3]> = cell.borrow_mut();
+        cellref[0] = 4;
+        let mut coerced: RefMut<[i32]> = cellref;
+        coerced[2] = 5;
+    }
+    {
+        let comp: &mut [i32] = &mut [4, 2, 5];
+        let cellref: Ref<[i32; 3]> = cell.borrow();
+        assert_eq!(&*cellref, comp);
+        let coerced: Ref<[i32]> = cellref;
+        assert_eq!(&*coerced, comp);
+    }
+}
+
+
