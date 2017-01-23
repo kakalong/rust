@@ -8,8 +8,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// Currently, all generic functions are instantiated in each codegen unit that
+// uses them, even those not marked with #[inline], so this test does not make
+// much sense at the moment.
+// ignore-test
+
 // ignore-tidy-linelength
-// compile-flags:-Zprint-trans-items=lazy
+// We specify -Z incremental here because we want to test the partitioning for
+// incremental compilation
+// compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/methods-are-with-self-type
 
 #![allow(dead_code)]
 
@@ -23,10 +30,10 @@ mod mod1 {
     // Even though the impl is in `mod1`, the methods should end up in the
     // parent module, since that is where their self-type is.
     impl SomeType {
-        //~ TRANS_ITEM fn methods_are_with_self_type::mod1[0]::{{impl}}[0]::method[0] @@ methods_are_with_self_type[WeakODR]
+        //~ TRANS_ITEM fn methods_are_with_self_type::mod1[0]::{{impl}}[0]::method[0] @@ methods_are_with_self_type[External]
         fn method(&self) {}
 
-        //~ TRANS_ITEM fn methods_are_with_self_type::mod1[0]::{{impl}}[0]::associated_fn[0] @@ methods_are_with_self_type[WeakODR]
+        //~ TRANS_ITEM fn methods_are_with_self_type::mod1[0]::{{impl}}[0]::associated_fn[0] @@ methods_are_with_self_type[External]
         fn associated_fn() {}
     }
 

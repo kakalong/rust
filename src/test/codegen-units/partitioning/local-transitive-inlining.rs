@@ -9,14 +9,16 @@
 // except according to those terms.
 
 // ignore-tidy-linelength
-// compile-flags:-Zprint-trans-items=lazy
+// We specify -Z incremental here because we want to test the partitioning for
+// incremental compilation
+// compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/local-transitive-inlining
 
 #![allow(dead_code)]
 #![crate_type="lib"]
 
 mod inline {
 
-    //~ TRANS_ITEM fn local_transitive_inlining::inline[0]::inlined_function[0] @@ local_transitive_inlining-inline[WeakODR] local_transitive_inlining-direct_user[Available] local_transitive_inlining-indirect_user[Available]
+    //~ TRANS_ITEM fn local_transitive_inlining::inline[0]::inlined_function[0] @@ local_transitive_inlining-indirect_user[Internal]
     #[inline(always)]
     pub fn inlined_function()
     {
@@ -27,7 +29,7 @@ mod inline {
 mod direct_user {
     use super::inline;
 
-    //~ TRANS_ITEM fn local_transitive_inlining::direct_user[0]::foo[0] @@ local_transitive_inlining-direct_user[WeakODR] local_transitive_inlining-indirect_user[Available]
+    //~ TRANS_ITEM fn local_transitive_inlining::direct_user[0]::foo[0] @@ local_transitive_inlining-indirect_user[Internal]
     #[inline(always)]
     pub fn foo() {
         inline::inlined_function();
@@ -37,7 +39,7 @@ mod direct_user {
 mod indirect_user {
     use super::direct_user;
 
-    //~ TRANS_ITEM fn local_transitive_inlining::indirect_user[0]::bar[0] @@ local_transitive_inlining-indirect_user[WeakODR]
+    //~ TRANS_ITEM fn local_transitive_inlining::indirect_user[0]::bar[0] @@ local_transitive_inlining-indirect_user[External]
     fn bar() {
         direct_user::foo();
     }
@@ -45,10 +47,8 @@ mod indirect_user {
 
 mod non_user {
 
-    //~ TRANS_ITEM fn local_transitive_inlining::non_user[0]::baz[0] @@ local_transitive_inlining-non_user[WeakODR]
+    //~ TRANS_ITEM fn local_transitive_inlining::non_user[0]::baz[0] @@ local_transitive_inlining-non_user[External]
     fn baz() {
 
     }
 }
-
-//~ TRANS_ITEM drop-glue i8

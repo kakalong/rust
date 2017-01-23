@@ -15,7 +15,7 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(custom_attribute)]
 #![allow(unused_attributes)]
@@ -26,33 +26,45 @@
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
+extern crate serialize as rustc_serialize;
+extern crate syntax_pos;
 
-use rustc::hir::{self, lowering};
-use rustc::hir::map::NodeItem;
+
+mod csv_dumper;
+mod json_api_dumper;
+mod json_dumper;
+mod data;
+mod dump;
+mod dump_visitor;
+pub mod external_data;
+#[macro_use]
+pub mod span_utils;
+
+use rustc::hir;
 use rustc::hir::def::Def;
+use rustc::hir::map::Node;
 use rustc::hir::def_id::DefId;
 use rustc::session::config::CrateType::CrateTypeExecutable;
 use rustc::ty::{self, TyCtxt};
 
 use std::env;
-use std::fs::{self, File};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use syntax::ast::{self, NodeId, PatKind};
-use syntax::codemap::*;
-use syntax::parse::token::{self, keywords};
+use syntax::ast::{self, NodeId, PatKind, Attribute, CRATE_NODE_ID};
+use syntax::parse::lexer::comments::strip_doc_comment_decoration;
+use syntax::parse::token;
+use syntax::symbol::{Symbol, keywords};
 use syntax::visit::{self, Visitor};
-use syntax::print::pprust::ty_to_string;
-
-mod csv_dumper;
-mod data;
-mod dump;
-mod dump_visitor;
-#[macro_use]
-pub mod span_utils;
+use syntax::print::pprust::{ty_to_string, arg_to_string};
+use syntax::codemap::MacroAttribute;
+use syntax_pos::*;
 
 pub use self::csv_dumper::CsvDumper;
+pub use self::json_api_dumper::JsonApiDumper;
+pub use self::json_dumper::JsonDumper;
 pub use self::data::*;
+pub use self::external_data::make_def_id;
 pub use self::dump::Dump;
 pub use self::dump_visitor::DumpVisitor;
 use self::span_utils::SpanUtils;
@@ -71,9 +83,10 @@ pub mod recorder {
 }
 
 pub struct SaveContext<'l, 'tcx: 'l> {
-    tcx: &'l TyCtxt<'tcx>,
-    lcx: &'l lowering::LoweringContext<'l>,
-    span_utils: SpanUtils<'l>,
+    tcx: TyCtxt<'l, 'tcx, 'tcx>,
+    tables: &'l ty::Tables<'tcx>,
+    analysis: &'l ty::CrateAnalysis<'tcx>,
+    span_utils: SpanUtils<'tcx>,
 }
 
 macro_rules! option_try(
@@ -81,32 +94,22 @@ macro_rules! option_try(
 );
 
 impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
-    pub fn new(tcx: &'l TyCtxt<'tcx>,
-               lcx: &'l lowering::LoweringContext<'l>)
-               -> SaveContext<'l, 'tcx> {
-        let span_utils = SpanUtils::new(&tcx.sess);
-        SaveContext::from_span_utils(tcx, lcx, span_utils)
-    }
-
-    pub fn from_span_utils(tcx: &'l TyCtxt<'tcx>,
-                           lcx: &'l lowering::LoweringContext<'l>,
-                           span_utils: SpanUtils<'l>)
-                           -> SaveContext<'l, 'tcx> {
-        SaveContext {
-            tcx: tcx,
-            lcx: lcx,
-            span_utils: span_utils,
-        }
-    }
-
     // List external crates used by the current crate.
     pub fn get_external_crates(&self) -> Vec<CrateData> {
         let mut result = Vec::new();
 
         for n in self.tcx.sess.cstore.crates() {
+            let span = match self.tcx.sess.cstore.extern_crate(n) {
+                Some(ref c) => c.span,
+                None => {
+                    debug!("Skipping crate {}, no data", n);
+                    continue;
+                }
+            };
             result.push(CrateData {
-                name: (&self.tcx.sess.cstore.crate_name(n)[..]).to_owned(),
-                number: n,
+                name: self.tcx.sess.cstore.crate_name(n).to_string(),
+                number: n.as_u32(),
+                span: span,
             });
         }
 
@@ -115,18 +118,24 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
 
     pub fn get_item_data(&self, item: &ast::Item) -> Option<Data> {
         match item.node {
-            ast::ItemKind::Fn(..) => {
-                let name = self.tcx.node_path_str(item.id);
-                let qualname = format!("::{}", name);
+            ast::ItemKind::Fn(ref decl, .., ref generics, _) => {
+                let qualname = format!("::{}", self.tcx.node_path_str(item.id));
                 let sub_span = self.span_utils.sub_span_after_keyword(item.span, keywords::Fn);
                 filter!(self.span_utils, sub_span, item.span, None);
+
+
                 Some(Data::FunctionData(FunctionData {
                     id: item.id,
-                    name: name,
+                    name: item.ident.to_string(),
                     qualname: qualname,
                     declaration: None,
                     span: sub_span.unwrap(),
                     scope: self.enclosing_scope(item.id),
+                    value: make_signature(decl, generics),
+                    visibility: From::from(&item.vis),
+                    parent: None,
+                    docs: docs_for_attrs(&item.attrs),
+                    sig: self.sig_base(item),
                 }))
             }
             ast::ItemKind::Static(ref typ, mt, ref expr) => {
@@ -144,12 +153,17 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 filter!(self.span_utils, sub_span, item.span, None);
                 Some(Data::VariableData(VariableData {
                     id: item.id,
+                    kind: VariableKind::Static,
                     name: item.ident.to_string(),
                     qualname: qualname,
                     span: sub_span.unwrap(),
                     scope: self.enclosing_scope(item.id),
+                    parent: None,
                     value: value,
                     type_value: ty_to_string(&typ),
+                    visibility: From::from(&item.vis),
+                    docs: docs_for_attrs(&item.attrs),
+                    sig: Some(self.sig_base(item)),
                 }))
             }
             ast::ItemKind::Const(ref typ, ref expr) => {
@@ -158,12 +172,17 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 filter!(self.span_utils, sub_span, item.span, None);
                 Some(Data::VariableData(VariableData {
                     id: item.id,
+                    kind: VariableKind::Const,
                     name: item.ident.to_string(),
                     qualname: qualname,
                     span: sub_span.unwrap(),
                     scope: self.enclosing_scope(item.id),
+                    parent: None,
                     value: self.span_utils.snippet(expr.span),
                     type_value: ty_to_string(&typ),
+                    visibility: From::from(&item.vis),
+                    docs: docs_for_attrs(&item.attrs),
+                    sig: Some(self.sig_base(item)),
                 }))
             }
             ast::ItemKind::Mod(ref m) => {
@@ -174,6 +193,7 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
 
                 let sub_span = self.span_utils.sub_span_after_keyword(item.span, keywords::Mod);
                 filter!(self.span_utils, sub_span, item.span, None);
+
                 Some(Data::ModData(ModData {
                     id: item.id,
                     name: item.ident.to_string(),
@@ -181,22 +201,36 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     span: sub_span.unwrap(),
                     scope: self.enclosing_scope(item.id),
                     filename: filename,
+                    items: m.items.iter().map(|i| i.id).collect(),
+                    visibility: From::from(&item.vis),
+                    docs: docs_for_attrs(&item.attrs),
+                    sig: self.sig_base(item),
                 }))
             }
-            ast::ItemKind::Enum(..) => {
-                let enum_name = format!("::{}", self.tcx.node_path_str(item.id));
-                let val = self.span_utils.snippet(item.span);
+            ast::ItemKind::Enum(ref def, _) => {
+                let name = item.ident.to_string();
+                let qualname = format!("::{}", self.tcx.node_path_str(item.id));
                 let sub_span = self.span_utils.sub_span_after_keyword(item.span, keywords::Enum);
                 filter!(self.span_utils, sub_span, item.span, None);
+                let variants_str = def.variants.iter()
+                                      .map(|v| v.node.name.to_string())
+                                      .collect::<Vec<_>>()
+                                      .join(", ");
+                let val = format!("{}::{{{}}}", name, variants_str);
                 Some(Data::EnumData(EnumData {
                     id: item.id,
+                    name: name,
                     value: val,
                     span: sub_span.unwrap(),
-                    qualname: enum_name,
+                    qualname: qualname,
                     scope: self.enclosing_scope(item.id),
+                    variants: def.variants.iter().map(|v| v.node.data.id()).collect(),
+                    visibility: From::from(&item.vis),
+                    docs: docs_for_attrs(&item.attrs),
+                    sig: self.sig_base(item),
                 }))
             }
-            ast::ItemKind::Impl(_, _, _, ref trait_ref, ref typ, _) => {
+            ast::ItemKind::Impl(.., ref trait_ref, ref typ, _) => {
                 let mut type_data = None;
                 let sub_span;
 
@@ -205,8 +239,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 match typ.node {
                     // Common case impl for a struct or something basic.
                     ast::TyKind::Path(None, ref path) => {
+                        filter!(self.span_utils, None, path.span, None);
                         sub_span = self.span_utils.sub_span_for_type_name(path.span);
-                        filter!(self.span_utils, sub_span, path.span, None);
                         type_data = self.lookup_ref_id(typ.id).map(|id| {
                             TypeRefData {
                                 span: sub_span.unwrap(),
@@ -242,21 +276,43 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         }
     }
 
-    pub fn get_field_data(&self, field: &ast::StructField,
-                          scope: NodeId) -> Option<VariableData> {
+    pub fn get_field_data(&self,
+                          field: &ast::StructField,
+                          scope: NodeId)
+                          -> Option<VariableData> {
         if let Some(ident) = field.ident {
+            let name = ident.to_string();
             let qualname = format!("::{}::{}", self.tcx.node_path_str(scope), ident);
-            let typ = self.tcx.node_types().get(&field.id).unwrap().to_string();
             let sub_span = self.span_utils.sub_span_before_token(field.span, token::Colon);
             filter!(self.span_utils, sub_span, field.span, None);
+            let def_id = self.tcx.map.local_def_id(field.id);
+            let typ = self.tcx.item_type(def_id).to_string();
+
+            let span = field.span;
+            let text = self.span_utils.snippet(field.span);
+            let ident_start = text.find(&name).unwrap();
+            let ident_end = ident_start + name.len();
+            let sig = Signature {
+                span: span,
+                text: text,
+                ident_start: ident_start,
+                ident_end: ident_end,
+                defs: vec![],
+                refs: vec![],
+            };
             Some(VariableData {
                 id: field.id,
-                name: ident.to_string(),
+                kind: VariableKind::Field,
+                name: name,
                 qualname: qualname,
                 span: sub_span.unwrap(),
                 scope: scope,
+                parent: Some(make_def_id(scope, &self.tcx.map)),
                 value: "".to_owned(),
                 type_value: typ,
+                visibility: From::from(&field.vis),
+                docs: docs_for_attrs(&field.attrs),
+                sig: Some(sig),
             })
         } else {
             None
@@ -269,23 +325,29 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                            name: ast::Name, span: Span) -> Option<FunctionData> {
         // The qualname for a method is the trait name or name of the struct in an impl in
         // which the method is declared in, followed by the method's name.
-        let qualname = match self.tcx.impl_of_method(self.tcx.map.local_def_id(id)) {
+        let (qualname, parent_scope, decl_id, vis, docs) =
+          match self.tcx.impl_of_method(self.tcx.map.local_def_id(id)) {
             Some(impl_id) => match self.tcx.map.get_if_local(impl_id) {
-                Some(NodeItem(item)) => {
+                Some(Node::NodeItem(item)) => {
                     match item.node {
-                        hir::ItemImpl(_, _, _, _, ref ty, _) => {
+                        hir::ItemImpl(.., ref ty, _) => {
                             let mut result = String::from("<");
-                            result.push_str(&rustc::hir::print::ty_to_string(&ty));
+                            result.push_str(&self.tcx.map.node_to_pretty_string(ty.id));
 
-                            match self.tcx.trait_of_item(self.tcx.map.local_def_id(id)) {
-                                Some(def_id) => {
-                                    result.push_str(" as ");
-                                    result.push_str(&self.tcx.item_path_str(def_id));
-                                }
-                                None => {}
+                            let trait_id = self.tcx.trait_id_of_impl(impl_id);
+                            let mut decl_id = None;
+                            if let Some(def_id) = trait_id {
+                                result.push_str(" as ");
+                                result.push_str(&self.tcx.item_path_str(def_id));
+                                self.tcx.associated_items(def_id)
+                                    .find(|item| item.name == name)
+                                    .map(|item| decl_id = Some(item.def_id));
                             }
                             result.push_str(">");
-                            result
+
+                            (result, trait_id, decl_id,
+                             From::from(&item.vis),
+                             docs_for_attrs(&item.attrs))
                         }
                         _ => {
                             span_bug!(span,
@@ -306,8 +368,11 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             None => match self.tcx.trait_of_item(self.tcx.map.local_def_id(id)) {
                 Some(def_id) => {
                     match self.tcx.map.get_if_local(def_id) {
-                        Some(NodeItem(_)) => {
-                            format!("::{}", self.tcx.item_path_str(def_id))
+                        Some(Node::NodeItem(item)) => {
+                            (format!("::{}", self.tcx.item_path_str(def_id)),
+                             Some(def_id), None,
+                             From::from(&item.vis),
+                             docs_for_attrs(&item.attrs))
                         }
                         r => {
                             span_bug!(span,
@@ -327,25 +392,35 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
 
         let qualname = format!("{}::{}", qualname, name);
 
-        let def_id = self.tcx.map.local_def_id(id);
-        let decl_id = self.tcx.trait_item_of_item(def_id).and_then(|new_id| {
-            let new_def_id = new_id.def_id();
-            if new_def_id != def_id {
-                Some(new_def_id)
-            } else {
-                None
-            }
-        });
-
         let sub_span = self.span_utils.sub_span_after_keyword(span, keywords::Fn);
         filter!(self.span_utils, sub_span, span, None);
+
+        let name = name.to_string();
+        let text = self.span_utils.signature_string_for_span(span);
+        let ident_start = text.find(&name).unwrap();
+        let ident_end = ident_start + name.len();
+        let sig = Signature {
+            span: span,
+            text: text,
+            ident_start: ident_start,
+            ident_end: ident_end,
+            defs: vec![],
+            refs: vec![],
+        };
+
         Some(FunctionData {
             id: id,
-            name: name.to_string(),
+            name: name,
             qualname: qualname,
             declaration: decl_id,
             span: sub_span.unwrap(),
             scope: self.enclosing_scope(id),
+            // FIXME you get better data here by using the visitor.
+            value: String::new(),
+            visibility: vis,
+            parent: parent_scope,
+            docs: docs,
+            sig: sig,
         })
     }
 
@@ -367,16 +442,23 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_expr_data(&self, expr: &ast::Expr) -> Option<Data> {
-        let hir_node = lowering::lower_expr(self.lcx, expr);
-        let ty = self.tcx.expr_ty_adjusted_opt(&hir_node);
+        let hir_node = self.tcx.map.expect_expr(expr.id);
+        let ty = self.tables.expr_ty_adjusted_opt(&hir_node);
         if ty.is_none() || ty.unwrap().sty == ty::TyError {
             return None;
         }
         match expr.node {
             ast::ExprKind::Field(ref sub_ex, ident) => {
-                let hir_node = lowering::lower_expr(self.lcx, sub_ex);
-                match self.tcx.expr_ty_adjusted(&hir_node).sty {
-                    ty::TyStruct(def, _) => {
+                let hir_node = match self.tcx.map.find(sub_ex.id) {
+                    Some(Node::NodeExpr(expr)) => expr,
+                    _ => {
+                        debug!("Missing or weird node for sub-expression {} in {:?}",
+                               sub_ex.id, expr);
+                        return None;
+                    }
+                };
+                match self.tables.expr_ty_adjusted(&hir_node).sty {
+                    ty::TyAdt(def, _) if !def.is_enum() => {
                         let f = def.struct_variant().field_named(ident.node.name);
                         let sub_span = self.span_utils.span_for_last_ident(expr.span);
                         filter!(self.span_utils, sub_span, expr.span, None);
@@ -388,15 +470,14 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                         }));
                     }
                     _ => {
-                        debug!("Expected struct type, found {:?}", ty);
+                        debug!("Expected struct or union type, found {:?}", ty);
                         None
                     }
                 }
             }
-            ast::ExprKind::Struct(ref path, _, _) => {
-                let hir_node = lowering::lower_expr(self.lcx, expr);
-                match self.tcx.expr_ty_adjusted(&hir_node).sty {
-                    ty::TyStruct(def, _) => {
+            ast::ExprKind::Struct(ref path, ..) => {
+                match self.tables.expr_ty_adjusted(&hir_node).sty {
+                    ty::TyAdt(def, _) if !def.is_enum() => {
                         let sub_span = self.span_utils.span_for_last_ident(path.span);
                         filter!(self.span_utils, sub_span, path.span, None);
                         Some(Data::TypeRefData(TypeRefData {
@@ -407,17 +488,17 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                         }))
                     }
                     _ => {
-                        // FIXME ty could legitimately be a TyEnum, but then we will fail
+                        // FIXME ty could legitimately be an enum, but then we will fail
                         // later if we try to look up the fields.
-                        debug!("expected TyStruct, found {:?}", ty);
+                        debug!("expected struct or union, found {:?}", ty);
                         None
                     }
                 }
             }
             ast::ExprKind::MethodCall(..) => {
                 let method_call = ty::MethodCall::expr(expr.id);
-                let method_id = self.tcx.tables.borrow().method_map[&method_call].def_id;
-                let (def_id, decl_id) = match self.tcx.impl_or_trait_item(method_id).container() {
+                let method_id = self.tables.method_map[&method_call].def_id;
+                let (def_id, decl_id) = match self.tcx.associated_item(method_id).container {
                     ty::ImplContainer(_) => (Some(method_id), None),
                     ty::TraitContainer(_) => (None, Some(method_id)),
                 };
@@ -441,12 +522,51 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         }
     }
 
-    pub fn get_path_data(&self, id: NodeId, path: &ast::Path) -> Option<Data> {
-        let def_map = self.tcx.def_map.borrow();
-        if !def_map.contains_key(&id) {
-            span_bug!(path.span, "def_map has no key for {} in visit_expr", id);
+    pub fn get_path_def(&self, id: NodeId) -> Def {
+        match self.tcx.map.get(id) {
+            Node::NodeTraitRef(tr) => tr.path.def,
+
+            Node::NodeItem(&hir::Item { node: hir::ItemUse(ref path, _), .. }) |
+            Node::NodeVisibility(&hir::Visibility::Restricted { ref path, .. }) => path.def,
+
+            Node::NodeExpr(&hir::Expr { node: hir::ExprPath(ref qpath), .. }) |
+            Node::NodeExpr(&hir::Expr { node: hir::ExprStruct(ref qpath, ..), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::Path(ref qpath), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::Struct(ref qpath, ..), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::TupleStruct(ref qpath, ..), .. }) => {
+                self.tables.qpath_def(qpath, id)
+            }
+
+            Node::NodeLocal(&hir::Pat { node: hir::PatKind::Binding(_, def_id, ..), .. }) => {
+                Def::Local(def_id)
+            }
+
+            Node::NodeTy(&hir::Ty { node: hir::TyPath(ref qpath), .. }) => {
+                match *qpath {
+                    hir::QPath::Resolved(_, ref path) => path.def,
+                    hir::QPath::TypeRelative(..) => {
+                        if let Some(ty) = self.analysis.hir_ty_to_ty.get(&id) {
+                            if let ty::TyProjection(proj) = ty.sty {
+                                for item in self.tcx.associated_items(proj.trait_ref.def_id) {
+                                    if item.kind == ty::AssociatedKind::Type {
+                                        if item.name == proj.item_name {
+                                            return Def::AssociatedTy(item.def_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Def::Err
+                    }
+                }
+            }
+
+            _ => Def::Err
         }
-        let def = def_map.get(&id).unwrap().full_def();
+    }
+
+    pub fn get_path_data(&self, id: NodeId, path: &ast::Path) -> Option<Data> {
+        let def = self.get_path_def(id);
         let sub_span = self.span_utils.span_for_last_ident(path.span);
         filter!(self.span_utils, sub_span, path.span, None);
         match def {
@@ -455,7 +575,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             Def::Static(..) |
             Def::Const(..) |
             Def::AssociatedConst(..) |
-            Def::Variant(..) => {
+            Def::StructCtor(..) |
+            Def::VariantCtor(..) => {
                 Some(Data::VariableRefData(VariableRefData {
                     name: self.span_utils.snippet(sub_span.unwrap()),
                     span: sub_span.unwrap(),
@@ -464,10 +585,13 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 }))
             }
             Def::Struct(def_id) |
+            Def::Variant(def_id, ..) |
+            Def::Union(def_id) |
             Def::Enum(def_id) |
             Def::TyAlias(def_id) |
+            Def::AssociatedTy(def_id) |
             Def::Trait(def_id) |
-            Def::TyParam(_, _, def_id, _) => {
+            Def::TyParam(def_id) => {
                 Some(Data::TypeRefData(TypeRefData {
                     span: sub_span.unwrap(),
                     ref_id: Some(def_id),
@@ -479,28 +603,10 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 let sub_span = self.span_utils.sub_span_for_meth_name(path.span);
                 filter!(self.span_utils, sub_span, path.span, None);
                 let def_id = if decl_id.is_local() {
-                    let ti = self.tcx.impl_or_trait_item(decl_id);
-                    match ti.container() {
-                        ty::TraitContainer(def_id) => {
-                            self.tcx
-                                .trait_items(def_id)
-                                .iter()
-                                .find(|mr| mr.name() == ti.name() && self.trait_method_has_body(mr))
-                                .map(|mr| mr.def_id())
-                        }
-                        ty::ImplContainer(def_id) => {
-                            let impl_items = self.tcx.impl_items.borrow();
-                            Some(impl_items.get(&def_id)
-                                           .unwrap()
-                                           .iter()
-                                           .find(|mr| {
-                                               self.tcx.impl_or_trait_item(mr.def_id()).name() ==
-                                               ti.name()
-                                           })
-                                           .unwrap()
-                                           .def_id())
-                        }
-                    }
+                    let ti = self.tcx.associated_item(decl_id);
+                    self.tcx.associated_items(ti.container.id())
+                        .find(|item| item.name == ti.name && item.defaultness.has_value())
+                        .map(|item| item.def_id)
                 } else {
                     None
                 };
@@ -526,27 +632,17 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     qualname: String::new() // FIXME: generate the real qualname
                 }))
             }
-            _ => None,
-        }
-    }
-
-    fn trait_method_has_body(&self, mr: &ty::ImplOrTraitItem) -> bool {
-        let def_id = mr.def_id();
-        if let Some(node_id) = self.tcx.map.as_local_node_id(def_id) {
-            let trait_item = self.tcx.map.expect_trait_item(node_id);
-            if let hir::TraitItem_::MethodTraitItem(_, Some(_)) = trait_item.node {
-                true
-            } else {
-                false
-            }
-        } else {
-            false
+            Def::PrimTy(..) |
+            Def::SelfTy(..) |
+            Def::Label(..) |
+            Def::Macro(..) |
+            Def::Err => None,
         }
     }
 
     pub fn get_field_ref_data(&self,
                               field_ref: &ast::Field,
-                              variant: ty::VariantDef,
+                              variant: &ty::VariantDef,
                               parent: NodeId)
                               -> Option<VariableRefData> {
         let f = variant.field_named(field_ref.ident.node.name);
@@ -614,20 +710,59 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
     }
 
     fn lookup_ref_id(&self, ref_id: NodeId) -> Option<DefId> {
-        if !self.tcx.def_map.borrow().contains_key(&ref_id) {
-            bug!("def_map has no key for {} in lookup_type_ref", ref_id);
+        match self.get_path_def(ref_id) {
+            Def::PrimTy(_) | Def::SelfTy(..) | Def::Err => None,
+            def => Some(def.def_id()),
         }
-        let def = self.tcx.def_map.borrow().get(&ref_id).unwrap().full_def();
-        match def {
-            Def::PrimTy(_) | Def::SelfTy(..) => None,
-            _ => Some(def.def_id()),
+    }
+
+    fn sig_base(&self, item: &ast::Item) -> Signature {
+        let text = self.span_utils.signature_string_for_span(item.span);
+        let name = item.ident.to_string();
+        let ident_start = text.find(&name).expect("Name not in signature?");
+        let ident_end = ident_start + name.len();
+        Signature {
+            span: mk_sp(item.span.lo, item.span.lo + BytePos(text.len() as u32)),
+            text: text,
+            ident_start: ident_start,
+            ident_end: ident_end,
+            defs: vec![],
+            refs: vec![],
         }
     }
 
     #[inline]
     pub fn enclosing_scope(&self, id: NodeId) -> NodeId {
-        self.tcx.map.get_enclosing_scope(id).unwrap_or(0)
+        self.tcx.map.get_enclosing_scope(id).unwrap_or(CRATE_NODE_ID)
     }
+}
+
+fn make_signature(decl: &ast::FnDecl, generics: &ast::Generics) -> String {
+    let mut sig = "fn ".to_owned();
+    if !generics.lifetimes.is_empty() || !generics.ty_params.is_empty() {
+        sig.push('<');
+        sig.push_str(&generics.lifetimes.iter()
+                              .map(|l| l.lifetime.name.to_string())
+                              .collect::<Vec<_>>()
+                              .join(", "));
+        if !generics.lifetimes.is_empty() {
+            sig.push_str(", ");
+        }
+        sig.push_str(&generics.ty_params.iter()
+                              .map(|l| l.ident.to_string())
+                              .collect::<Vec<_>>()
+                              .join(", "));
+        sig.push_str("> ");
+    }
+    sig.push('(');
+    sig.push_str(&decl.inputs.iter().map(arg_to_string).collect::<Vec<_>>().join(", "));
+    sig.push(')');
+    match decl.output {
+        ast::FunctionRetTy::Default(_) => sig.push_str(" -> ()"),
+        ast::FunctionRetTy::Ty(ref t) => sig.push_str(&format!(" -> {}", ty_to_string(t))),
+    }
+
+    sig
 }
 
 // An AST visitor for collecting paths from patterns.
@@ -642,16 +777,15 @@ impl PathCollector {
     }
 }
 
-impl<'v> Visitor<'v> for PathCollector {
+impl<'a> Visitor<'a> for PathCollector {
     fn visit_pat(&mut self, p: &ast::Pat) {
         match p.node {
-            PatKind::Struct(ref path, _, _) => {
+            PatKind::Struct(ref path, ..) => {
                 self.collected_paths.push((p.id, path.clone(),
                                            ast::Mutability::Mutable, recorder::TypeRef));
             }
-            PatKind::TupleStruct(ref path, _) |
-            PatKind::Path(ref path) |
-            PatKind::QPath(_, ref path) => {
+            PatKind::TupleStruct(ref path, ..) |
+            PatKind::Path(_, ref path) => {
                 self.collected_paths.push((p.id, path.clone(),
                                            ast::Mutability::Mutable, recorder::VarRef));
             }
@@ -677,12 +811,48 @@ impl<'v> Visitor<'v> for PathCollector {
     }
 }
 
-pub fn process_crate<'l, 'tcx>(tcx: &'l TyCtxt<'tcx>,
-                               lcx: &'l lowering::LoweringContext<'l>,
+fn docs_for_attrs(attrs: &[Attribute]) -> String {
+    let doc = Symbol::intern("doc");
+    let mut result = String::new();
+
+    for attr in attrs {
+        if attr.name() == doc {
+            if let Some(val) = attr.value_str() {
+                if attr.is_sugared_doc {
+                    result.push_str(&strip_doc_comment_decoration(&val.as_str()));
+                } else {
+                    result.push_str(&val.as_str());
+                }
+                result.push('\n');
+            }
+        }
+    }
+
+    result
+}
+
+#[derive(Clone, Copy, Debug, RustcEncodable)]
+pub enum Format {
+    Csv,
+    Json,
+    JsonApi,
+}
+
+impl Format {
+    fn extension(&self) -> &'static str {
+        match *self {
+            Format::Csv => ".csv",
+            Format::Json | Format::JsonApi => ".json",
+        }
+    }
+}
+
+pub fn process_crate<'l, 'tcx>(tcx: TyCtxt<'l, 'tcx, 'tcx>,
                                krate: &ast::Crate,
-                               analysis: &ty::CrateAnalysis,
+                               analysis: &'l ty::CrateAnalysis<'tcx>,
                                cratename: &str,
-                               odir: Option<&Path>) {
+                               odir: Option<&Path>,
+                               format: Format) {
     let _ignore = tcx.dep_graph.in_ignore();
 
     assert!(analysis.glob_map.is_some());
@@ -690,15 +860,15 @@ pub fn process_crate<'l, 'tcx>(tcx: &'l TyCtxt<'tcx>,
     info!("Dumping crate {}", cratename);
 
     // find a path to dump our data to
-    let mut root_path = match env::var_os("DXR_RUST_TEMP_FOLDER") {
+    let mut root_path = match env::var_os("RUST_SAVE_ANALYSIS_FOLDER") {
         Some(val) => PathBuf::from(val),
         None => match odir {
-            Some(val) => val.join("dxr"),
-            None => PathBuf::from("dxr-temp"),
+            Some(val) => val.join("save-analysis"),
+            None => PathBuf::from("save-analysis-temp"),
         },
     };
 
-    if let Err(e) = fs::create_dir_all(&root_path) {
+    if let Err(e) = rustc::util::fs::create_dir_racy(&root_path) {
         tcx.sess.err(&format!("Could not create directory {}: {}",
                               root_path.display(),
                               e));
@@ -718,21 +888,37 @@ pub fn process_crate<'l, 'tcx>(tcx: &'l TyCtxt<'tcx>,
     };
     out_name.push_str(&cratename);
     out_name.push_str(&tcx.sess.opts.cg.extra_filename);
-    out_name.push_str(".csv");
+    out_name.push_str(format.extension());
     root_path.push(&out_name);
     let mut output_file = File::create(&root_path).unwrap_or_else(|e| {
         let disp = root_path.display();
         tcx.sess.fatal(&format!("Could not open {}: {}", disp, e));
     });
     root_path.pop();
+    let output = &mut output_file;
 
-    let utils = SpanUtils::new(&tcx.sess);
-    let mut dumper = CsvDumper::new(&mut output_file, utils);
-    let mut visitor = DumpVisitor::new(tcx, lcx, analysis, &mut dumper);
-    // FIXME: we don't write anything!
+    let save_ctxt = SaveContext {
+        tcx: tcx,
+        tables: &ty::Tables::empty(),
+        analysis: analysis,
+        span_utils: SpanUtils::new(&tcx.sess),
+    };
 
-    visitor.dump_crate_info(cratename, krate);
-    visit::walk_crate(&mut visitor, krate);
+    macro_rules! dump {
+        ($new_dumper: expr) => {{
+            let mut dumper = $new_dumper;
+            let mut visitor = DumpVisitor::new(save_ctxt, &mut dumper);
+
+            visitor.dump_crate_info(cratename, krate);
+            visit::walk_crate(&mut visitor, krate);
+        }}
+    }
+
+    match format {
+        Format::Csv => dump!(CsvDumper::new(output)),
+        Format::Json => dump!(JsonDumper::new(output)),
+        Format::JsonApi => dump!(JsonApiDumper::new(output)),
+    }
 }
 
 // Utility functions for the module.

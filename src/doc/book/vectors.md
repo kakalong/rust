@@ -17,7 +17,7 @@ situation, this is just convention.)
 There’s an alternate form of `vec!` for repeating an initial value:
 
 ```rust
-let v = vec![0; 10]; // ten zeroes
+let v = vec![0; 10]; // A vector of ten zeroes.
 ```
 
 Vectors store their contents as contiguous arrays of `T` on the heap. This means
@@ -40,16 +40,16 @@ The indices count from `0`, so the third element is `v[2]`.
 
 It’s also important to note that you must index with the `usize` type:
 
-```ignore
+```rust,ignore
 let v = vec![1, 2, 3, 4, 5];
 
 let i: usize = 0;
 let j: i32 = 0;
 
-// works
+// Works:
 v[i];
 
-// doesn’t
+// Doesn’t:
 v[j];
 ```
 
@@ -71,7 +71,7 @@ you cannot index with an `i32`.
 
 If you try to access an index that doesn’t exist:
 
-```ignore
+```rust,ignore
 let v = vec![1, 2, 3];
 println!("Item 7 is {}", v[7]);
 ```
@@ -79,7 +79,7 @@ println!("Item 7 is {}", v[7]);
 then the current thread will [panic] with a message like this:
 
 ```text
-thread '<main>' panicked at 'index out of bounds: the len is 3 but the index is 7'
+thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 7'
 ```
 
 If you want to handle out-of-bounds errors without panicking, you can use
@@ -152,5 +152,5 @@ API documentation][vec].
 [box]: ../std/boxed/index.html
 [generic]: generics.html
 [panic]: concurrency.html#panics
-[get]: http://doc.rust-lang.org/std/vec/struct.Vec.html#method.get
-[get_mut]: http://doc.rust-lang.org/std/vec/struct.Vec.html#method.get_mut
+[get]: ../std/vec/struct.Vec.html#method.get
+[get_mut]: ../std/vec/struct.Vec.html#method.get_mut

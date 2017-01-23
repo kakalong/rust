@@ -8,15 +8,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(rustc_attrs)]
+#![allow(unused)]
+
+struct S;
+struct Z;
 
 mod foo {
+    use ::super::{S, Z}; //~ ERROR global paths cannot start with `super`
+    //~^ WARN this was previously accepted by the compiler but is being phased out
+
     pub fn g() {
-        use ::super::main; //~ WARN expected identifier, found keyword `super`
+        use ::super::main; //~ ERROR global paths cannot start with `super`
         //~^ WARN this was previously accepted by the compiler but is being phased out
         main();
     }
 }
 
-#[rustc_error]
-fn main() { foo::g(); } //~ ERROR compilation successful
+fn main() { foo::g(); }

@@ -9,29 +9,55 @@
 // except according to those terms.
 
 use hir::map::DefPathData;
-use middle::cstore::LOCAL_CRATE;
-use hir::def_id::{DefId, CRATE_DEF_INDEX};
+use hir::def_id::{CrateNum, DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use ty::{self, Ty, TyCtxt};
 use syntax::ast;
+use syntax::symbol::Symbol;
 
-impl<'tcx> TyCtxt<'tcx> {
+use std::cell::Cell;
+
+thread_local! {
+    static FORCE_ABSOLUTE: Cell<bool> = Cell::new(false)
+}
+
+/// Enforces that item_path_str always returns an absolute path.
+/// This is useful when building symbols that contain types,
+/// where we want the crate name to be part of the symbol.
+pub fn with_forced_absolute_paths<F: FnOnce() -> R, R>(f: F) -> R {
+    FORCE_ABSOLUTE.with(|force| {
+        let old = force.get();
+        force.set(true);
+        let result = f();
+        force.set(old);
+        result
+    })
+}
+
+impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// Returns a string identifying this def-id. This string is
     /// suitable for user output. It is relative to the current crate
-    /// root.
-    pub fn item_path_str(&self, def_id: DefId) -> String {
-        let mut buffer = LocalPathBuffer::new(RootMode::Local);
+    /// root, unless with_forced_absolute_paths was used.
+    pub fn item_path_str(self, def_id: DefId) -> String {
+        let mode = FORCE_ABSOLUTE.with(|force| {
+            if force.get() {
+                RootMode::Absolute
+            } else {
+                RootMode::Local
+            }
+        });
+        let mut buffer = LocalPathBuffer::new(mode);
         self.push_item_path(&mut buffer, def_id);
         buffer.into_string()
     }
 
     /// Returns a string identifying this local node-id.
-    pub fn node_path_str(&self, id: ast::NodeId) -> String {
+    pub fn node_path_str(self, id: ast::NodeId) -> String {
         self.item_path_str(self.map.local_def_id(id))
     }
 
     /// Returns a string identifying this def-id. This string is
     /// suitable for user output. It always begins with a crate identifier.
-    pub fn absolute_item_path_str(&self, def_id: DefId) -> String {
+    pub fn absolute_item_path_str(self, def_id: DefId) -> String {
         let mut buffer = LocalPathBuffer::new(RootMode::Absolute);
         self.push_item_path(&mut buffer, def_id);
         buffer.into_string()
@@ -40,7 +66,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns the "path" to a particular crate. This can proceed in
     /// various ways, depending on the `root_mode` of the `buffer`.
     /// (See `RootMode` enum for more details.)
-    pub fn push_krate_path<T>(&self, buffer: &mut T, cnum: ast::CrateNum)
+    pub fn push_krate_path<T>(self, buffer: &mut T, cnum: CrateNum)
         where T: ItemPathBuffer
     {
         match *buffer.root_mode() {
@@ -68,14 +94,14 @@ impl<'tcx> TyCtxt<'tcx> {
                     if let Some(extern_crate_def_id) = opt_extern_crate {
                         self.push_item_path(buffer, extern_crate_def_id);
                     } else {
-                        buffer.push(&self.crate_name(cnum));
+                        buffer.push(&self.crate_name(cnum).as_str());
                     }
                 }
             }
             RootMode::Absolute => {
                 // In absolute mode, just write the crate name
                 // unconditionally.
-                buffer.push(&self.crate_name(cnum));
+                buffer.push(&self.original_crate_name(cnum).as_str());
             }
         }
     }
@@ -83,7 +109,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// If possible, this pushes a global path resolving to `external_def_id` that is visible
     /// from at least one local module and returns true. If the crate defining `external_def_id` is
     /// declared with an `extern crate`, the path is guarenteed to use the `extern crate`.
-    pub fn try_push_visible_item_path<T>(&self, buffer: &mut T, external_def_id: DefId) -> bool
+    pub fn try_push_visible_item_path<T>(self, buffer: &mut T, external_def_id: DefId) -> bool
         where T: ItemPathBuffer
     {
         let visible_parent_map = self.sess.cstore.visible_parent_map();
@@ -100,7 +126,7 @@ impl<'tcx> TyCtxt<'tcx> {
                         return true;
                     }
                     None => {
-                        buffer.push(&self.crate_name(cur_def.krate));
+                        buffer.push(&self.crate_name(cur_def.krate).as_str());
                         cur_path.iter().rev().map(|segment| buffer.push(&segment.as_str())).count();
                         return true;
                     }
@@ -108,7 +134,9 @@ impl<'tcx> TyCtxt<'tcx> {
                 }
             }
 
-            cur_path.push(self.sess.cstore.item_name(cur_def));
+            cur_path.push(self.sess.cstore.def_key(cur_def)
+                              .disambiguated_data.data.get_opt_name().unwrap_or_else(||
+                Symbol::intern("<unnamed>")));
             match visible_parent_map.get(&cur_def) {
                 Some(&def) => cur_def = def,
                 None => return false,
@@ -116,7 +144,7 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
-    pub fn push_item_path<T>(&self, buffer: &mut T, def_id: DefId)
+    pub fn push_item_path<T>(self, buffer: &mut T, def_id: DefId)
         where T: ItemPathBuffer
     {
         match *buffer.root_mode() {
@@ -130,11 +158,6 @@ impl<'tcx> TyCtxt<'tcx> {
             DefPathData::CrateRoot => {
                 assert!(key.parent.is_none());
                 self.push_krate_path(buffer, def_id.krate);
-            }
-
-            DefPathData::InlinedRoot(ref root_path) => {
-                assert!(key.parent.is_none());
-                self.push_item_path(buffer, root_path.def_id);
             }
 
             DefPathData::Impl => {
@@ -156,7 +179,8 @@ impl<'tcx> TyCtxt<'tcx> {
             data @ DefPathData::Initializer |
             data @ DefPathData::MacroDef(..) |
             data @ DefPathData::ClosureExpr |
-            data @ DefPathData::Binding(..) => {
+            data @ DefPathData::Binding(..) |
+            data @ DefPathData::ImplTrait => {
                 let parent_def_id = self.parent_def_id(def_id).unwrap();
                 self.push_item_path(buffer, parent_def_id);
                 buffer.push(&data.as_interned_str());
@@ -164,7 +188,7 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
-    fn push_impl_path<T>(&self,
+    fn push_impl_path<T>(self,
                          buffer: &mut T,
                          impl_def_id: DefId)
         where T: ItemPathBuffer
@@ -189,7 +213,7 @@ impl<'tcx> TyCtxt<'tcx> {
         // users may find it useful. Currently, we omit the parent if
         // the impl is either in the same module as the self-type or
         // as the trait.
-        let self_ty = self.lookup_item_type(impl_def_id).ty;
+        let self_ty = self.item_type(impl_def_id);
         let in_self_mod = match characteristic_def_id_of_type(self_ty) {
             None => false,
             Some(ty_def_id) => self.parent_def_id(ty_def_id) == Some(parent_def_id),
@@ -229,9 +253,8 @@ impl<'tcx> TyCtxt<'tcx> {
         // impl on `Foo`, but fallback to `<Foo>::bar` if self-type is
         // anything other than a simple path.
         match self_ty.sty {
-            ty::TyStruct(adt_def, substs) |
-            ty::TyEnum(adt_def, substs) => {
-                if substs.types.is_empty() { // ignore regions
+            ty::TyAdt(adt_def, substs) => {
+                if substs.types().next().is_none() { // ignore regions
                     self.push_item_path(buffer, adt_def.did);
                 } else {
                     buffer.push(&format!("<{}>", self_ty));
@@ -253,7 +276,7 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
-    fn push_impl_path_fallback<T>(&self,
+    fn push_impl_path_fallback<T>(self,
                                   buffer: &mut T,
                                   impl_def_id: DefId)
         where T: ItemPathBuffer
@@ -272,7 +295,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns the def-id of `def_id`'s parent in the def tree. If
     /// this returns `None`, then `def_id` represents a crate root or
     /// inlined root.
-    fn parent_def_id(&self, def_id: DefId) -> Option<DefId> {
+    pub fn parent_def_id(self, def_id: DefId) -> Option<DefId> {
         let key = self.def_key(def_id);
         key.parent.map(|index| DefId { krate: def_id.krate, index: index })
     }
@@ -284,12 +307,11 @@ impl<'tcx> TyCtxt<'tcx> {
 /// function tries to find a "characteristic def-id" for a
 /// type. It's just a heuristic so it makes some questionable
 /// decisions and we may want to adjust it later.
-pub fn characteristic_def_id_of_type<'tcx>(ty: Ty<'tcx>) -> Option<DefId> {
+pub fn characteristic_def_id_of_type(ty: Ty) -> Option<DefId> {
     match ty.sty {
-        ty::TyStruct(adt_def, _) |
-        ty::TyEnum(adt_def, _) => Some(adt_def.did),
+        ty::TyAdt(adt_def, _) => Some(adt_def.did),
 
-        ty::TyTrait(ref data) => Some(data.principal_def_id()),
+        ty::TyDynamic(data, ..) => data.principal().map(|p| p.def_id()),
 
         ty::TyArray(subty, _) |
         ty::TySlice(subty) |
@@ -302,7 +324,7 @@ pub fn characteristic_def_id_of_type<'tcx>(ty: Ty<'tcx>) -> Option<DefId> {
                                    .filter_map(|ty| characteristic_def_id_of_type(ty))
                                    .next(),
 
-        ty::TyFnDef(def_id, _, _) |
+        ty::TyFnDef(def_id, ..) |
         ty::TyClosure(def_id, _) => Some(def_id),
 
         ty::TyBool |
@@ -313,8 +335,10 @@ pub fn characteristic_def_id_of_type<'tcx>(ty: Ty<'tcx>) -> Option<DefId> {
         ty::TyFnPtr(_) |
         ty::TyProjection(_) |
         ty::TyParam(_) |
+        ty::TyAnon(..) |
         ty::TyInfer(_) |
         ty::TyError |
+        ty::TyNever |
         ty::TyFloat(_) => None,
     }
 }

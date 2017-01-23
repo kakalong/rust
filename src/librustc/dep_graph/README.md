@@ -134,6 +134,10 @@ to read from it. Similarly, reading from the `tcache` map for item `X`
 (which is a `DepTrackingMap`, described below) automatically invokes
 `dep_graph.read(ItemSignature(X))`.
 
+**Note:** adding `Hir` nodes requires a bit of caution due to the
+"inlining" that old trans and constant evaluation still use. See the
+section on inlining below.
+
 To make this strategy work, a certain amount of indirection is
 required. For example, modules in the HIR do not have direct pointers
 to the items that they contain. Rather, they contain node-ids -- one
@@ -337,6 +341,8 @@ path is found (as demonstrated above).
 
 ### Debugging the dependency graph
 
+#### Dumping the graph
+
 The compiler is also capable of dumping the dependency graph for your
 debugging pleasure. To do so, pass the `-Z dump-dep-graph` flag. The
 graph will be dumped to `dep_graph.{txt,dot}` in the current
@@ -387,3 +393,51 @@ RUST_DEP_GRAPH_FILTER='Hir&foo -> TypeckItemBody & bar'
 This will dump out all the nodes that lead from `Hir(foo)` to
 `TypeckItemBody(bar)`, from which you can (hopefully) see the source
 of the erroneous edge.
+
+#### Tracking down incorrect edges
+
+Sometimes, after you dump the dependency graph, you will find some
+path that should not exist, but you will not be quite sure how it came
+to be. **When the compiler is built with debug assertions,** it can
+help you track that down. Simply set the `RUST_FORBID_DEP_GRAPH_EDGE`
+environment variable to a filter. Every edge created in the dep-graph
+will be tested against that filter -- if it matches, a `bug!` is
+reported, so you can easily see the backtrace (`RUST_BACKTRACE=1`).
+
+The syntax for these filters is the same as described in the previous
+section. However, note that this filter is applied to every **edge**
+and doesn't handle longer paths in the graph, unlike the previous
+section.
+
+Example:
+
+You find that there is a path from the `Hir` of `foo` to the type
+check of `bar` and you don't think there should be. You dump the
+dep-graph as described in the previous section and open `dep-graph.txt`
+to see something like:
+
+    Hir(foo) -> Collect(bar)
+    Collect(bar) -> TypeckItemBody(bar)
+
+That first edge looks suspicious to you. So you set
+`RUST_FORBID_DEP_GRAPH_EDGE` to `Hir&foo -> Collect&bar`, re-run, and
+then observe the backtrace. Voila, bug fixed!
+
+### Inlining of HIR nodes
+
+For the time being, at least, we still sometimes "inline" HIR nodes
+from other crates into the current HIR map. This creates a weird
+scenario where the same logical item (let's call it `X`) has two
+def-ids: the original def-id `X` and a new, inlined one `X'`. `X'` is
+in the current crate, but it's not like other HIR nodes: in
+particular, when we restart compilation, it will not be available to
+hash. Therefore, we do not want `Hir(X')` nodes appearing in our
+graph.  Instead, we want a "read" of `Hir(X')` to be represented as a
+read of `MetaData(X)`, since the metadata for `X` is where the inlined
+representation originated in the first place.
+
+To achieve this, the HIR map will detect if the def-id originates in
+an inlined node and add a dependency to a suitable `MetaData` node
+instead. If you are reading a HIR node and are not sure if it may be
+inlined or not, you can use `tcx.map.read(node_id)` and it will detect
+whether the node is inlined or not and do the right thing.

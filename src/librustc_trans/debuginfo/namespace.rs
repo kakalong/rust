@@ -10,7 +10,7 @@
 
 // Namespace Handling.
 
-use super::metadata::{file_metadata, NO_FILE_METADATA, UNKNOWN_LINE_NUMBER};
+use super::metadata::{file_metadata, unknown_file_metadata, UNKNOWN_LINE_NUMBER};
 use super::utils::{DIB, debug_context, span_start};
 
 use llvm;
@@ -22,7 +22,7 @@ use common::CrateContext;
 use libc::c_uint;
 use std::ffi::CString;
 use std::ptr;
-use syntax::codemap::DUMMY_SP;
+use syntax_pos::DUMMY_SP;
 
 pub fn mangled_name_of_item(ccx: &CrateContext, def_id: DefId, extra: &str) -> String {
     fn fill_nested(ccx: &CrateContext, def_id: DefId, extra: &str, output: &mut String) {
@@ -35,7 +35,7 @@ pub fn mangled_name_of_item(ccx: &CrateContext, def_id: DefId, extra: &str) -> S
         }
 
         let name = match def_key.disambiguated_data.data {
-            DefPathData::CrateRoot => ccx.tcx().crate_name(def_id.krate),
+            DefPathData::CrateRoot => ccx.tcx().crate_name(def_id.krate).as_str(),
             data => data.as_interned_str()
         };
 
@@ -64,21 +64,21 @@ pub fn item_namespace(ccx: &CrateContext, def_id: DefId) -> DIScope {
     });
 
     let namespace_name = match def_key.disambiguated_data.data {
-        DefPathData::CrateRoot => ccx.tcx().crate_name(def_id.krate),
+        DefPathData::CrateRoot => ccx.tcx().crate_name(def_id.krate).as_str(),
         data => data.as_interned_str()
     };
 
     let namespace_name = CString::new(namespace_name.as_bytes()).unwrap();
-    let span = ccx.tcx().map.def_id_span(def_id, DUMMY_SP);
+    let span = ccx.tcx().def_span(def_id);
     let (file, line) = if span != DUMMY_SP {
         let loc = span_start(ccx, span);
-        (file_metadata(ccx, &loc.file.name), loc.line as c_uint)
+        (file_metadata(ccx, &loc.file.name, &loc.file.abs_path), loc.line as c_uint)
     } else {
-        (NO_FILE_METADATA, UNKNOWN_LINE_NUMBER)
+        (unknown_file_metadata(ccx), UNKNOWN_LINE_NUMBER)
     };
 
     let scope = unsafe {
-        llvm::LLVMDIBuilderCreateNameSpace(
+        llvm::LLVMRustDIBuilderCreateNameSpace(
             DIB(ccx),
             parent_scope,
             namespace_name.as_ptr(),

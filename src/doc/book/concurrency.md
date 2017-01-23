@@ -4,7 +4,7 @@ Concurrency and parallelism are incredibly important topics in computer
 science, and are also a hot topic in industry today. Computers are gaining more
 and more cores, yet many programmers aren't prepared to fully utilize them.
 
-Rust's memory safety features also apply to its concurrency story too. Even
+Rust's memory safety features also apply to its concurrency story. Even
 concurrent Rust programs must be memory safe, having no data races. Rust's type
 system is up to the task, and gives you powerful ways to reason about
 concurrent code at compile time.
@@ -165,7 +165,7 @@ concurrency bugs.
 As an example, here is a Rust program that would have a data race in many
 languages. It will not compile:
 
-```ignore
+```rust,ignore
 use std::thread;
 use std::time::Duration;
 
@@ -204,7 +204,7 @@ Calling `clone()` on an `Rc<T>` will return a new owned reference and bump the
 internal reference count. We create one of these for each thread:
 
 
-```ignore
+```rust,ignore
 use std::thread;
 use std::time::Duration;
 use std::rc::Rc;
@@ -213,10 +213,10 @@ fn main() {
     let mut data = Rc::new(vec![1, 2, 3]);
 
     for i in 0..3 {
-        // create a new owned reference
+        // Create a new owned reference:
         let data_ref = data.clone();
 
-        // use it in a thread
+        // Use it in a thread:
         thread::spawn(move || {
             data_ref[0] += i;
         });
@@ -250,7 +250,7 @@ In essence, `Arc<T>` is a type that lets us share ownership of data _across
 threads_.
 
 
-```ignore
+```rust,ignore
 use std::thread;
 use std::sync::Arc;
 use std::time::Duration;
@@ -281,8 +281,8 @@ And... still gives us an error.
 ```
 
 `Arc<T>` by default has immutable contents. It allows the _sharing_ of data
-between threads, but shared mutable data is unsafe and when threads are
-involved can cause data races!
+between threads, but shared mutable data is unsafe—and when threads are
+involved—can cause data races!
 
 
 Usually when we wish to make something in an immutable position mutable, we use
@@ -336,7 +336,7 @@ The lock "release" here is implicit; when the result of the lock (in this case,
 Note that [`lock`](../std/sync/struct.Mutex.html#method.lock) method of
 [`Mutex`](../std/sync/struct.Mutex.html) has this signature:
 
-```ignore
+```rust,ignore
 fn lock(&self) -> LockResult<MutexGuard<T>>
 ```
 
@@ -390,8 +390,8 @@ use std::sync::mpsc;
 fn main() {
     let data = Arc::new(Mutex::new(0));
 
-    // `tx` is the "transmitter" or "sender"
-    // `rx` is the "receiver"
+    // `tx` is the "transmitter" or "sender".
+    // `rx` is the "receiver".
     let (tx, rx) = mpsc::channel();
 
     for _ in 0..10 {

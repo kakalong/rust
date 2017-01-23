@@ -24,16 +24,12 @@
 //! A few whitelisted exceptions are allowed as there's known bugs in rustdoc,
 //! but this should catch the majority of "broken link" cases.
 
-extern crate url;
-
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, Component};
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-
-use url::{Url, UrlParser};
 
 use Redirect::*;
 
@@ -47,9 +43,8 @@ macro_rules! t {
 fn main() {
     let docs = env::args().nth(1).unwrap();
     let docs = env::current_dir().unwrap().join(docs);
-    let mut url = Url::from_file_path(&docs).unwrap();
     let mut errors = false;
-    walk(&mut HashMap::new(), &docs, &docs, &mut url, &mut errors);
+    walk(&mut HashMap::new(), &docs, &docs, &mut errors);
     if errors {
         panic!("found some broken links");
     }
@@ -75,55 +70,42 @@ struct FileEntry {
 type Cache = HashMap<PathBuf, FileEntry>;
 
 impl FileEntry {
-    fn parse_ids(&mut self,
-                file: &Path,
-                contents: &str,
-                errors: &mut bool)
-{
+    fn parse_ids(&mut self, file: &Path, contents: &str, errors: &mut bool) {
         if self.ids.is_empty() {
             with_attrs_in_source(contents, " id", |fragment, i| {
                 let frag = fragment.trim_left_matches("#").to_owned();
                 if !self.ids.insert(frag) {
                     *errors = true;
-                    println!("{}:{}: id is not unique: `{}`",
-                             file.display(), i, fragment);
+                    println!("{}:{}: id is not unique: `{}`", file.display(), i, fragment);
                 }
             });
         }
     }
 }
 
-fn walk(cache: &mut Cache,
-        root: &Path,
-        dir: &Path,
-        url: &mut Url,
-        errors: &mut bool)
-{
+fn walk(cache: &mut Cache, root: &Path, dir: &Path, errors: &mut bool) {
     for entry in t!(dir.read_dir()).map(|e| t!(e)) {
         let path = entry.path();
         let kind = t!(entry.file_type());
-        url.path_mut().unwrap().push(entry.file_name().into_string().unwrap());
         if kind.is_dir() {
-            walk(cache, root, &path, url, errors);
+            walk(cache, root, &path, errors);
         } else {
-            let pretty_path = check(cache, root, &path, url, errors);
+            let pretty_path = check(cache, root, &path, errors);
             if let Some(pretty_path) = pretty_path {
                 let entry = cache.get_mut(&pretty_path).unwrap();
                 // we don't need the source anymore,
-                // so drop to to reduce memory-usage
+                // so drop to reduce memory-usage
                 entry.source = String::new();
             }
         }
-        url.path_mut().unwrap().pop();
     }
 }
 
 fn check(cache: &mut Cache,
          root: &Path,
          file: &Path,
-         base: &Url,
-         errors: &mut bool) -> Option<PathBuf>
-{
+         errors: &mut bool)
+         -> Option<PathBuf> {
     // ignore js files as they are not prone to errors as the rest of the
     // documentation is and they otherwise bring up false positives.
     if file.extension().and_then(|s| s.to_str()) == Some("js") {
@@ -148,49 +130,59 @@ fn check(cache: &mut Cache,
         return None;
     }
 
-    if file.ends_with("std/sys/ext/index.html") {
-        return None;
-    }
-
-    if let Some(file) = file.to_str() {
-        // FIXME(#31948)
-        if file.contains("ParseFloatError") {
-            return None;
-        }
-        // weird reexports, but this module is on its way out, so chalk it up to
-        // "rustdoc weirdness" and move on from there
-        if file.contains("scoped_tls") {
-            return None;
-        }
-    }
-
-    let mut parser = UrlParser::new();
-    parser.base_url(base);
-
     let res = load_file(cache, root, PathBuf::from(file), SkipRedirect);
     let (pretty_file, contents) = match res {
         Ok(res) => res,
         Err(_) => return None,
     };
     {
-        cache.get_mut(&pretty_file).unwrap()
-                                   .parse_ids(&pretty_file, &contents, errors);
+        cache.get_mut(&pretty_file)
+             .unwrap()
+             .parse_ids(&pretty_file, &contents, errors);
     }
 
     // Search for anything that's the regex 'href[ ]*=[ ]*".*?"'
     with_attrs_in_source(&contents, " href", |url, i| {
+        // Ignore external URLs
+        if url.starts_with("http:") || url.starts_with("https:") ||
+           url.starts_with("javascript:") || url.starts_with("ftp:") ||
+           url.starts_with("irc:") || url.starts_with("data:") {
+            return;
+        }
+        let mut parts = url.splitn(2, "#");
+        let url = parts.next().unwrap();
+        let fragment = parts.next();
+        let mut parts = url.splitn(2, "?");
+        let url = parts.next().unwrap();
+
         // Once we've plucked out the URL, parse it using our base url and
-        // then try to extract a file path. If either of these fail then we
-        // just keep going.
-        let (parsed_url, path) = match url_to_file_path(&parser, url) {
-            Some((url, path)) => (url, PathBuf::from(path)),
-            None => return,
-        };
+        // then try to extract a file path.
+        let mut path = file.to_path_buf();
+        if !url.is_empty() {
+            path.pop();
+            for part in Path::new(url).components() {
+                match part {
+                    Component::Prefix(_) |
+                    Component::RootDir => panic!(),
+                    Component::CurDir => {}
+                    Component::ParentDir => { path.pop(); }
+                    Component::Normal(s) => { path.push(s); }
+                }
+            }
+        }
 
         // Alright, if we've found a file name then this file had better
         // exist! If it doesn't then we register and print an error.
         if path.exists() {
             if path.is_dir() {
+                // Links to directories show as directory listings when viewing
+                // the docs offline so it's best to avoid them.
+                *errors = true;
+                let pretty_path = path.strip_prefix(root).unwrap_or(&path);
+                println!("{}:{}: directory link - {}",
+                         pretty_file.display(),
+                         i + 1,
+                         pretty_path.display());
                 return;
             }
             let res = load_file(cache, root, path.clone(), FromRedirect(false));
@@ -198,14 +190,17 @@ fn check(cache: &mut Cache,
                 Ok(res) => res,
                 Err(LoadError::IOError(err)) => panic!(format!("{}", err)),
                 Err(LoadError::BrokenRedirect(target, _)) => {
-                    print!("{}:{}: broken redirect to {}",
-                           pretty_file.display(), i + 1, target.display());
+                    *errors = true;
+                    println!("{}:{}: broken redirect to {}",
+                             pretty_file.display(),
+                             i + 1,
+                             target.display());
                     return;
                 }
                 Err(LoadError::IsRedirect) => unreachable!(),
             };
 
-            if let Some(ref fragment) = parsed_url.fragment {
+            if let Some(ref fragment) = fragment {
                 // Fragments like `#1-6` are most likely line numbers to be
                 // interpreted by javascript, so we're ignoring these
                 if fragment.splitn(2, '-')
@@ -216,12 +211,12 @@ fn check(cache: &mut Cache,
                 let entry = &mut cache.get_mut(&pretty_path).unwrap();
                 entry.parse_ids(&pretty_path, &contents, errors);
 
-                if !entry.ids.contains(fragment) {
+                if !entry.ids.contains(*fragment) {
                     *errors = true;
                     print!("{}:{}: broken link fragment  ",
-                           pretty_file.display(), i + 1);
-                    println!("`#{}` pointing to `{}`",
-                             fragment, pretty_path.display());
+                           pretty_file.display(),
+                           i + 1);
+                    println!("`#{}` pointing to `{}`", fragment, pretty_path.display());
                 };
             }
         } else {
@@ -236,8 +231,9 @@ fn check(cache: &mut Cache,
 
 fn load_file(cache: &mut Cache,
              root: &Path,
-             file: PathBuf,
-             redirect: Redirect) -> Result<(PathBuf, String), LoadError> {
+             mut file: PathBuf,
+             redirect: Redirect)
+             -> Result<(PathBuf, String), LoadError> {
     let mut contents = String::new();
     let pretty_file = PathBuf::from(file.strip_prefix(root).unwrap_or(&file));
 
@@ -245,17 +241,16 @@ fn load_file(cache: &mut Cache,
         Entry::Occupied(entry) => {
             contents = entry.get().source.clone();
             None
-        },
+        }
         Entry::Vacant(entry) => {
-            let mut fp = try!(File::open(file.clone()).map_err(|err| {
+            let mut fp = File::open(file.clone()).map_err(|err| {
                 if let FromRedirect(true) = redirect {
                     LoadError::BrokenRedirect(file.clone(), err)
                 } else {
                     LoadError::IOError(err)
                 }
-            }));
-            try!(fp.read_to_string(&mut contents)
-                   .map_err(|err| LoadError::IOError(err)));
+            })?;
+            fp.read_to_string(&mut contents).map_err(|err| LoadError::IOError(err))?;
 
             let maybe = maybe_redirect(&contents);
             if maybe.is_some() {
@@ -269,18 +264,15 @@ fn load_file(cache: &mut Cache,
                 });
             }
             maybe
-        },
+        }
     };
-    let base = Url::from_file_path(&file).unwrap();
-    let mut parser = UrlParser::new();
-    parser.base_url(&base);
-
-    match maybe_redirect.and_then(|url| url_to_file_path(&parser, &url)) {
-        Some((_, redirect_file)) => {
+    file.pop();
+    match maybe_redirect.map(|url| file.join(url)) {
+        Some(redirect_file) => {
             let path = PathBuf::from(redirect_file);
             load_file(cache, root, path, FromRedirect(true))
         }
-        None => Ok((pretty_file, contents))
+        None => Ok((pretty_file, contents)),
     }
 }
 
@@ -300,26 +292,17 @@ fn maybe_redirect(source: &str) -> Option<String> {
     })
 }
 
-fn url_to_file_path(parser: &UrlParser, url: &str) -> Option<(Url, PathBuf)> {
-    parser.parse(url).ok().and_then(|parsed_url| {
-        parsed_url.to_file_path().ok().map(|f| (parsed_url, f))
-    })
-}
-
-fn with_attrs_in_source<F: FnMut(&str, usize)>(contents: &str,
-                                               attr: &str,
-                                               mut f: F)
-{
+fn with_attrs_in_source<F: FnMut(&str, usize)>(contents: &str, attr: &str, mut f: F) {
     for (i, mut line) in contents.lines().enumerate() {
         while let Some(j) = line.find(attr) {
-            let rest = &line[j + attr.len() ..];
+            let rest = &line[j + attr.len()..];
             line = rest;
             let pos_equals = match rest.find("=") {
                 Some(i) => i,
                 None => continue,
             };
             if rest[..pos_equals].trim_left_matches(" ") != "" {
-                continue
+                continue;
             }
 
             let rest = &rest[pos_equals + 1..];
@@ -331,7 +314,7 @@ fn with_attrs_in_source<F: FnMut(&str, usize)>(contents: &str,
             let quote_delim = rest.as_bytes()[pos_quote] as char;
 
             if rest[..pos_quote].trim_left_matches(" ") != "" {
-                continue
+                continue;
             }
             let rest = &rest[pos_quote + 1..];
             let url = match rest.find(quote_delim) {

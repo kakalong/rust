@@ -13,28 +13,12 @@
 ######################################################################
 
 # The version number
-CFG_RELEASE_NUM=1.10.0
+CFG_RELEASE_NUM=1.16.0
 
 # An optional number to put after the label, e.g. '.2' -> '-beta.2'
 # NB Make sure it starts with a dot to conform to semver pre-release
 # versions (section 9)
 CFG_PRERELEASE_VERSION=.1
-
-# Append a version-dependent hash to each library, so we can install different
-# versions in the same place
-CFG_FILENAME_EXTRA=$(shell printf '%s' $(CFG_RELEASE)$(CFG_EXTRA_FILENAME) | $(CFG_HASH_COMMAND))
-
-# A magic value that allows the compiler to use unstable features during the
-# bootstrap even when doing so would normally be an error because of feature
-# staging or because the build turns on warnings-as-errors and unstable features
-# default to warnings. The build has to match this key in an env var.
-#
-# This value is keyed off the release to ensure that all compilers for one
-# particular release have the same bootstrap key. Note that this is
-# intentionally not "secure" by any definition, this is largely just a deterrent
-# from users enabling unstable features on the stable compiler.
-CFG_BOOTSTRAP_KEY=$(CFG_FILENAME_EXTRA)
-CFG_BOOTSTRAP_KEY_STAGE0=$(shell grep 'rustc_key' $(S)src/stage0.txt | sed 's/rustc_key: '//)
 
 ifeq ($(CFG_RELEASE_CHANNEL),stable)
 # This is the normal semver version string, e.g. "0.12.0", "0.12.0-nightly"
@@ -63,6 +47,20 @@ endif
 ifeq ($(CFG_RELEASE_CHANNEL),dev)
 CFG_RELEASE=$(CFG_RELEASE_NUM)-dev
 CFG_PACKAGE_VERS=$(CFG_RELEASE_NUM)-dev
+endif
+
+# Append a version-dependent hash to each library, so we can install different
+# versions in the same place
+CFG_FILENAME_EXTRA=$(shell printf '%s' $(CFG_RELEASE)$(CFG_EXTRA_FILENAME) | $(CFG_HASH_COMMAND))
+
+# If local-rust is the same major.minor as the current version, then force a local-rebuild
+ifdef CFG_ENABLE_LOCAL_RUST
+SEMVER_PREFIX=$(shell echo $(CFG_RELEASE_NUM) | grep -E -o '^[[:digit:]]+\.[[:digit:]]+')
+LOCAL_RELEASE=$(shell $(S)src/etc/local_stage0.sh --print-rustc-release $(CFG_LOCAL_RUST_ROOT))
+ifneq (,$(filter $(SEMVER_PREFIX).%,$(LOCAL_RELEASE)))
+    CFG_INFO := $(info cfg: auto-detected local-rebuild using $(LOCAL_RELEASE))
+    CFG_ENABLE_LOCAL_REBUILD = 1
+endif
 endif
 
 # The name of the package to use for creating tarballs, installers etc.
@@ -144,15 +142,13 @@ endif
 ifdef CFG_ENABLE_DEBUGINFO
   $(info cfg: enabling debuginfo (CFG_ENABLE_DEBUGINFO))
   CFG_RUSTC_FLAGS += -g
-endif
-
-ifdef CFG_ENABLE_ORBIT
-  $(info cfg: launching MIR (CFG_ENABLE_ORBIT))
-  CFG_RUSTC_FLAGS += -Z orbit
+else ifdef CFG_ENABLE_DEBUGINFO_LINES
+  $(info cfg: enabling line number debuginfo (CFG_ENABLE_DEBUGINFO_LINES))
+  CFG_RUSTC_FLAGS += -Cdebuginfo=1
 endif
 
 ifdef SAVE_TEMPS
-  CFG_RUSTC_FLAGS += --save-temps
+  CFG_RUSTC_FLAGS += -C save-temps
 endif
 ifdef ASM_COMMENTS
   CFG_RUSTC_FLAGS += -Z asm-comments
@@ -179,7 +175,7 @@ endif
 # that the snapshot will be generated with a statically linked rustc so we only
 # have to worry about the distribution of one file (with its native dynamic
 # dependencies)
-RUSTFLAGS_STAGE0 += -C prefer-dynamic -C no-stack-check
+RUSTFLAGS_STAGE0 += -C prefer-dynamic
 RUSTFLAGS_STAGE1 += -C prefer-dynamic
 RUST_LIB_FLAGS_ST2 += -C prefer-dynamic
 RUST_LIB_FLAGS_ST3 += -C prefer-dynamic
@@ -289,7 +285,7 @@ endif
 # LLVM macros
 ######################################################################
 
-LLVM_OPTIONAL_COMPONENTS=x86 arm aarch64 mips powerpc pnacl
+LLVM_OPTIONAL_COMPONENTS=x86 arm aarch64 mips powerpc pnacl systemz jsbackend msp430 sparc
 LLVM_REQUIRED_COMPONENTS=ipo bitreader bitwriter linker asmparser mcjit \
                 interpreter instrumentation
 
@@ -337,6 +333,7 @@ LLVM_AS_$(1)=$$(CFG_LLVM_INST_DIR_$(1))/bin/llvm-as$$(X_$(1))
 LLC_$(1)=$$(CFG_LLVM_INST_DIR_$(1))/bin/llc$$(X_$(1))
 
 LLVM_ALL_COMPONENTS_$(1)=$$(shell "$$(LLVM_CONFIG_$(1))" --components)
+LLVM_VERSION_$(1)=$$(shell "$$(LLVM_CONFIG_$(1))" --version)
 
 endef
 
@@ -375,12 +372,12 @@ CFG_INFO := $(info cfg: disabling unstable features (CFG_DISABLE_UNSTABLE_FEATUR
 # Turn on feature-staging
 export CFG_DISABLE_UNSTABLE_FEATURES
 # Subvert unstable feature lints to do the self-build
-export RUSTC_BOOTSTRAP_KEY:=$(CFG_BOOTSTRAP_KEY)
 endif
-export CFG_BOOTSTRAP_KEY
 ifdef CFG_MUSL_ROOT
 export CFG_MUSL_ROOT
 endif
+
+export RUSTC_BOOTSTRAP := 1
 
 ######################################################################
 # Per-stage targets and runner
@@ -390,7 +387,7 @@ endif
 # This 'function' will determine which debugger scripts to copy based on a
 # target triple. See debuggers.mk for more information.
 TRIPLE_TO_DEBUGGER_SCRIPT_SETTING=\
- $(if $(findstring windows,$(1)),none,$(if $(findstring darwin,$(1)),lldb,gdb))
+ $(if $(findstring windows-msvc,$(1)),none,all)
 
 STAGES = 0 1 2 3
 
@@ -498,7 +495,11 @@ else
 ifeq ($$(CFG_WINDOWSY_$(3)),1)
   LD_LIBRARY_PATH_ENV_NAME$(1)_T_$(2)_H_$(3) := PATH
 else
+ifeq ($$(OSTYPE_$(3)),unknown-haiku)
+  LD_LIBRARY_PATH_ENV_NAME$(1)_T_$(2)_H_$(3) := LIBRARY_PATH
+else
   LD_LIBRARY_PATH_ENV_NAME$(1)_T_$(2)_H_$(3) := LD_LIBRARY_PATH
+endif
 endif
 endif
 
@@ -526,6 +527,11 @@ ifneq ($(strip $(CFG_BUILD)),$(strip $(3)))
 CFGFLAG$(1)_T_$(2)_H_$(3) = stage1
 
 RPATH_VAR$(1)_T_$(2)_H_$(3) := $$(TARGET_RPATH_VAR1_T_$(2)_H_$$(CFG_BUILD))
+else
+ifdef CFG_ENABLE_LOCAL_REBUILD
+# Assume the local-rebuild rustc already has stage1 features too.
+CFGFLAG$(1)_T_$(2)_H_$(3) = stage1
+endif
 endif
 endif
 
@@ -613,7 +619,8 @@ ALL_TARGET_RULES = $(foreach target,$(CFG_TARGET), \
 	$(foreach host,$(CFG_HOST), \
  all-target-$(target)-host-$(host)))
 
-all: $(ALL_TARGET_RULES) $(GENERATED) docs
+all-no-docs: $(ALL_TARGET_RULES) $(GENERATED)
+all: all-no-docs docs
 
 ######################################################################
 # Build system documentation

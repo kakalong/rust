@@ -14,19 +14,19 @@
 //! unit-tested and separated from the Rust source and compiler data
 //! structures.
 
-use rustc::mir::repr::{BinOp, BorrowKind, Field, Literal, Mutability, UnOp,
-    TypedConstVal};
-use rustc::middle::const_val::ConstVal;
+use rustc::mir::{BinOp, BorrowKind, Field, Literal, UnOp, TypedConstVal};
 use rustc::hir::def_id::DefId;
 use rustc::middle::region::CodeExtent;
 use rustc::ty::subst::Substs;
 use rustc::ty::{self, AdtDef, ClosureSubsts, Region, Ty};
 use rustc::hir;
 use syntax::ast;
-use syntax::codemap::Span;
+use syntax_pos::Span;
 use self::cx::Cx;
 
 pub mod cx;
+
+pub use rustc_const_eval::pattern::{BindingMode, Pattern, PatternKind, FieldPattern};
 
 #[derive(Clone, Debug)]
 pub struct Block<'tcx> {
@@ -139,6 +139,12 @@ pub enum ExprKind<'tcx> {
     Cast {
         source: ExprRef<'tcx>,
     },
+    Use {
+        source: ExprRef<'tcx>,
+    }, // Use a lexpr to get a vexpr.
+    NeverToAny {
+        source: ExprRef<'tcx>,
+    },
     ReifyFnPointer {
         source: ExprRef<'tcx>,
     },
@@ -190,12 +196,13 @@ pub enum ExprKind<'tcx> {
         id: DefId,
     },
     Borrow {
-        region: Region,
+        region: &'tcx Region,
         borrow_kind: BorrowKind,
         arg: ExprRef<'tcx>,
     },
     Break {
         label: Option<CodeExtent>,
+        value: Option<ExprRef<'tcx>>,
     },
     Continue {
         label: Option<CodeExtent>,
@@ -207,14 +214,14 @@ pub enum ExprKind<'tcx> {
         value: ExprRef<'tcx>,
         count: TypedConstVal<'tcx>,
     },
-    Vec {
+    Array {
         fields: Vec<ExprRef<'tcx>>,
     },
     Tuple {
         fields: Vec<ExprRef<'tcx>>,
     },
     Adt {
-        adt_def: AdtDef<'tcx>,
+        adt_def: &'tcx AdtDef,
         variant_index: usize,
         substs: &'tcx Substs<'tcx>,
         fields: Vec<FieldExprRef<'tcx>>,
@@ -222,7 +229,7 @@ pub enum ExprKind<'tcx> {
     },
     Closure {
         closure_id: DefId,
-        substs: &'tcx ClosureSubsts<'tcx>,
+        substs: ClosureSubsts<'tcx>,
         upvars: Vec<ExprRef<'tcx>>,
     },
     Literal {
@@ -260,84 +267,10 @@ pub struct Arm<'tcx> {
     pub body: ExprRef<'tcx>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Pattern<'tcx> {
-    pub ty: Ty<'tcx>,
-    pub span: Span,
-    pub kind: Box<PatternKind<'tcx>>,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum LogicalOp {
     And,
     Or,
-}
-
-#[derive(Clone, Debug)]
-pub enum PatternKind<'tcx> {
-    Wild,
-
-    /// x, ref x, x @ P, etc
-    Binding {
-        mutability: Mutability,
-        name: ast::Name,
-        mode: BindingMode,
-        var: ast::NodeId,
-        ty: Ty<'tcx>,
-        subpattern: Option<Pattern<'tcx>>,
-    },
-
-    /// Foo(...) or Foo{...} or Foo, where `Foo` is a variant name from an adt with >1 variants
-    Variant {
-        adt_def: AdtDef<'tcx>,
-        variant_index: usize,
-        subpatterns: Vec<FieldPattern<'tcx>>,
-    },
-
-    /// (...), Foo(...), Foo{...}, or Foo, where `Foo` is a variant name from an adt with 1 variant
-    Leaf {
-        subpatterns: Vec<FieldPattern<'tcx>>,
-    },
-
-    /// box P, &P, &mut P, etc
-    Deref {
-        subpattern: Pattern<'tcx>,
-    },
-
-    Constant {
-        value: ConstVal,
-    },
-
-    Range {
-        lo: Literal<'tcx>,
-        hi: Literal<'tcx>,
-    },
-
-    /// matches against a slice, checking the length and extracting elements
-    Slice {
-        prefix: Vec<Pattern<'tcx>>,
-        slice: Option<Pattern<'tcx>>,
-        suffix: Vec<Pattern<'tcx>>,
-    },
-
-    /// fixed match against an array, irrefutable
-    Array {
-        prefix: Vec<Pattern<'tcx>>,
-        slice: Option<Pattern<'tcx>>,
-        suffix: Vec<Pattern<'tcx>>,
-    },
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum BindingMode {
-    ByValue,
-    ByRef(Region, BorrowKind),
-}
-
-#[derive(Clone, Debug)]
-pub struct FieldPattern<'tcx> {
-    pub field: Field,
-    pub pattern: Pattern<'tcx>,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -358,13 +291,13 @@ pub struct FieldPattern<'tcx> {
 pub trait Mirror<'tcx> {
     type Output;
 
-    fn make_mirror<'a>(self, cx: &mut Cx<'a, 'tcx>) -> Self::Output;
+    fn make_mirror<'a, 'gcx>(self, cx: &mut Cx<'a, 'gcx, 'tcx>) -> Self::Output;
 }
 
 impl<'tcx> Mirror<'tcx> for Expr<'tcx> {
     type Output = Expr<'tcx>;
 
-    fn make_mirror<'a>(self, _: &mut Cx<'a, 'tcx>) -> Expr<'tcx> {
+    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Expr<'tcx> {
         self
     }
 }
@@ -372,7 +305,7 @@ impl<'tcx> Mirror<'tcx> for Expr<'tcx> {
 impl<'tcx> Mirror<'tcx> for ExprRef<'tcx> {
     type Output = Expr<'tcx>;
 
-    fn make_mirror<'a>(self, hir: &mut Cx<'a, 'tcx>) -> Expr<'tcx> {
+    fn make_mirror<'a, 'gcx>(self, hir: &mut Cx<'a, 'gcx, 'tcx>) -> Expr<'tcx> {
         match self {
             ExprRef::Hair(h) => h.make_mirror(hir),
             ExprRef::Mirror(m) => *m,
@@ -383,7 +316,7 @@ impl<'tcx> Mirror<'tcx> for ExprRef<'tcx> {
 impl<'tcx> Mirror<'tcx> for Stmt<'tcx> {
     type Output = Stmt<'tcx>;
 
-    fn make_mirror<'a>(self, _: &mut Cx<'a, 'tcx>) -> Stmt<'tcx> {
+    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Stmt<'tcx> {
         self
     }
 }
@@ -391,7 +324,7 @@ impl<'tcx> Mirror<'tcx> for Stmt<'tcx> {
 impl<'tcx> Mirror<'tcx> for StmtRef<'tcx> {
     type Output = Stmt<'tcx>;
 
-    fn make_mirror<'a>(self, _: &mut Cx<'a,'tcx>) -> Stmt<'tcx> {
+    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Stmt<'tcx> {
         match self {
             StmtRef::Mirror(m) => *m,
         }
@@ -401,7 +334,7 @@ impl<'tcx> Mirror<'tcx> for StmtRef<'tcx> {
 impl<'tcx> Mirror<'tcx> for Block<'tcx> {
     type Output = Block<'tcx>;
 
-    fn make_mirror<'a>(self, _: &mut Cx<'a, 'tcx>) -> Block<'tcx> {
+    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Block<'tcx> {
         self
     }
 }

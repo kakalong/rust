@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::Target;
+use target::{Target, TargetOptions, TargetResult};
 use super::apple_ios_base::{opts, Arch};
 
-pub fn target() -> Target {
-    Target {
+pub fn target() -> TargetResult {
+    let base = opts(Arch::X86_64)?;
+    Ok(Target {
         llvm_target: "x86_64-apple-ios".to_string(),
         target_endian: "little".to_string(),
         target_pointer_width: "64".to_string(),
@@ -21,6 +22,9 @@ pub fn target() -> Target {
         target_os: "ios".to_string(),
         target_env: "".to_string(),
         target_vendor: "apple".to_string(),
-        options: opts(Arch::X86_64)
-    }
+        options: TargetOptions {
+            max_atomic_width: Some(64),
+            .. base
+        }
+    })
 }

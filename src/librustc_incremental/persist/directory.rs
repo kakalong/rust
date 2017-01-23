@@ -15,11 +15,12 @@
 
 use rustc::dep_graph::DepNode;
 use rustc::hir::map::DefPath;
-use rustc::hir::def_id::DefId;
-use rustc::ty;
+use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc::ty::TyCtxt;
 use rustc::util::nodemap::DefIdMap;
-use rustc_serialize::{Decoder as RustcDecoder, Encoder as RustcEncoder};
 use std::fmt::{self, Debug};
+use std::iter::once;
+use std::collections::HashMap;
 
 /// Index into the DefIdDirectory
 #[derive(Copy, Clone, Debug, PartialOrd, Ord, Hash, PartialEq, Eq,
@@ -32,17 +33,90 @@ pub struct DefPathIndex {
 pub struct DefIdDirectory {
     // N.B. don't use Removable here because these def-ids are loaded
     // directly without remapping, so loading them should not fail.
-    paths: Vec<DefPath>
+    paths: Vec<DefPath>,
+
+    // For each crate, saves the crate-name/disambiguator so that
+    // later we can match crate-numbers up again.
+    krates: Vec<CrateInfo>,
+}
+
+#[derive(Debug, RustcEncodable, RustcDecodable)]
+pub struct CrateInfo {
+    krate: CrateNum,
+    name: String,
+    disambiguator: String,
 }
 
 impl DefIdDirectory {
-    pub fn new() -> DefIdDirectory {
-        DefIdDirectory { paths: vec![] }
+    pub fn new(krates: Vec<CrateInfo>) -> DefIdDirectory {
+        DefIdDirectory { paths: vec![], krates: krates }
     }
 
-    pub fn retrace(&self, tcx: &ty::TyCtxt) -> RetracedDefIdDirectory {
+    fn max_current_crate(&self, tcx: TyCtxt) -> CrateNum {
+        tcx.sess.cstore.crates()
+                       .into_iter()
+                       .max()
+                       .unwrap_or(LOCAL_CRATE)
+    }
+
+    /// Returns a string form for `index`; useful for debugging
+    pub fn def_path_string(&self, tcx: TyCtxt, index: DefPathIndex) -> String {
+        let path = &self.paths[index.index as usize];
+        if self.krate_still_valid(tcx, self.max_current_crate(tcx), path.krate) {
+            path.to_string(tcx)
+        } else {
+            format!("<crate {} changed>", path.krate)
+        }
+    }
+
+    pub fn krate_still_valid(&self,
+                             tcx: TyCtxt,
+                             max_current_crate: CrateNum,
+                             krate: CrateNum) -> bool {
+        // Check that the crate-number still matches. For now, if it
+        // doesn't, just return None. We could do better, such as
+        // finding the new number.
+
+        if krate > max_current_crate {
+            false
+        } else {
+            let old_info = &self.krates[krate.as_usize()];
+            assert_eq!(old_info.krate, krate);
+            let old_name: &str = &old_info.name;
+            let old_disambiguator: &str = &old_info.disambiguator;
+            let new_name: &str = &tcx.crate_name(krate).as_str();
+            let new_disambiguator: &str = &tcx.crate_disambiguator(krate).as_str();
+            old_name == new_name && old_disambiguator == new_disambiguator
+        }
+    }
+
+    pub fn retrace(&self, tcx: TyCtxt) -> RetracedDefIdDirectory {
+
+        fn make_key(name: &str, disambiguator: &str) -> String {
+            format!("{}/{}", name, disambiguator)
+        }
+
+        let new_krates: HashMap<_, _> =
+            once(LOCAL_CRATE)
+            .chain(tcx.sess.cstore.crates())
+            .map(|krate| (make_key(&tcx.crate_name(krate).as_str(),
+                                   &tcx.crate_disambiguator(krate).as_str()), krate))
+            .collect();
+
         let ids = self.paths.iter()
-                            .map(|path| tcx.map.retrace_path(path))
+                            .map(|path| {
+                                let old_krate_id = path.krate.as_usize();
+                                assert!(old_krate_id < self.krates.len());
+                                let old_crate_info = &self.krates[old_krate_id];
+                                let old_crate_key = make_key(&old_crate_info.name,
+                                                         &old_crate_info.disambiguator);
+                                if let Some(&new_crate_key) = new_krates.get(&old_crate_key) {
+                                    tcx.retrace_path(new_crate_key, &path.data)
+                                } else {
+                                    debug!("crate {:?} no longer exists", old_crate_key);
+                                    None
+                                }
+                            })
                             .collect();
         RetracedDefIdDirectory { ids: ids }
     }
@@ -58,53 +132,70 @@ impl RetracedDefIdDirectory {
         self.ids[index.index as usize]
     }
 
-    pub fn map(&self, node: DepNode<DefPathIndex>) -> Option<DepNode<DefId>> {
+    pub fn map(&self, node: &DepNode<DefPathIndex>) -> Option<DepNode<DefId>> {
         node.map_def(|&index| self.def_id(index))
     }
 }
 
 pub struct DefIdDirectoryBuilder<'a,'tcx:'a> {
-    tcx: &'a ty::TyCtxt<'tcx>,
-    hash: DefIdMap<Option<DefPathIndex>>,
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    hash: DefIdMap<DefPathIndex>,
     directory: DefIdDirectory,
 }
 
 impl<'a,'tcx> DefIdDirectoryBuilder<'a,'tcx> {
-    pub fn new(tcx: &'a ty::TyCtxt<'tcx>) -> DefIdDirectoryBuilder<'a, 'tcx> {
+    pub fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> DefIdDirectoryBuilder<'a, 'tcx> {
+        let mut krates: Vec<_> =
+            once(LOCAL_CRATE)
+            .chain(tcx.sess.cstore.crates())
+            .map(|krate| {
+                CrateInfo {
+                    krate: krate,
+                    name: tcx.crate_name(krate).to_string(),
+                    disambiguator: tcx.crate_disambiguator(krate).to_string()
+                }
+            })
+            .collect();
+
+        // the result of crates() is not in order, so sort list of
+        // crates so that we can just index it later
+        krates.sort_by_key(|k| k.krate);
+
         DefIdDirectoryBuilder {
             tcx: tcx,
             hash: DefIdMap(),
-            directory: DefIdDirectory::new()
+            directory: DefIdDirectory::new(krates),
         }
     }
 
-    pub fn add(&mut self, def_id: DefId) -> Option<DefPathIndex> {
-        if !def_id.is_local() {
-            // FIXME(#32015) clarify story about cross-crate dep tracking
-            return None;
-        }
+    pub fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx> {
+        self.tcx
+    }
 
+    pub fn add(&mut self, def_id: DefId) -> DefPathIndex {
+        debug!("DefIdDirectoryBuilder: def_id={:?}", def_id);
         let tcx = self.tcx;
         let paths = &mut self.directory.paths;
         self.hash.entry(def_id)
                  .or_insert_with(|| {
                      let def_path = tcx.def_path(def_id);
-                     if !def_path.is_local() {
-                         return None;
-                     }
                      let index = paths.len() as u32;
                      paths.push(def_path);
-                     Some(DefPathIndex { index: index })
+                     DefPathIndex { index: index }
                  })
                  .clone()
     }
 
-    pub fn map(&mut self, node: DepNode<DefId>) -> Option<DepNode<DefPathIndex>> {
-        node.map_def(|&def_id| self.add(def_id))
+    pub fn lookup_def_path(&self, id: DefPathIndex) -> &DefPath {
+        &self.directory.paths[id.index as usize]
     }
 
-    pub fn into_directory(self) -> DefIdDirectory {
-        self.directory
+    pub fn map(&mut self, node: &DepNode<DefId>) -> DepNode<DefPathIndex> {
+        node.map_def(|&def_id| Some(self.add(def_id))).unwrap()
+    }
+
+    pub fn directory(&self) -> &DefIdDirectory {
+        &self.directory
     }
 }
 

@@ -9,7 +9,7 @@ strings also work differently than in some other systems languages, such as C.
 Let’s dig into the details. A ‘string’ is a sequence of Unicode scalar values
 encoded as a stream of UTF-8 bytes. All strings are guaranteed to be a valid
 encoding of UTF-8 sequences. Additionally, unlike some systems languages,
-strings are not null-terminated and can contain null bytes.
+strings are not NUL-terminated and can contain NUL bytes.
 
 Rust has two main types of strings: `&str` and `String`. Let’s talk about
 `&str` first. These are called ‘string slices’. A string slice has a fixed
@@ -32,7 +32,7 @@ include the newline and the leading spaces:
 let s = "foo
     bar";
 
-assert_eq!("foo\n        bar", s);
+assert_eq!("foo\n    bar", s);
 ```
 
 The second, with a `\`, trims the spaces and the newline:
@@ -83,10 +83,10 @@ converted using `&*`.
 ```rust,no_run
 use std::net::TcpStream;
 
-TcpStream::connect("192.168.0.1:3000"); // &str parameter
+TcpStream::connect("192.168.0.1:3000"); // Parameter is of type &str.
 
 let addr_string = "192.168.0.1:3000".to_string();
-TcpStream::connect(&*addr_string); // convert addr_string to &str
+TcpStream::connect(&*addr_string); // Convert `addr_string` to &str.
 ```
 
 Viewing a `String` as a `&str` is cheap, but converting the `&str` to a
@@ -138,7 +138,7 @@ You can get something similar to an index like this:
 
 ```rust
 # let hachiko = "忠犬ハチ公";
-let dog = hachiko.chars().nth(1); // kinda like hachiko[1]
+let dog = hachiko.chars().nth(1); // Kinda like `hachiko[1]`.
 ```
 
 This emphasizes that we have to walk from the beginning of the list of `chars`.
@@ -163,8 +163,8 @@ let hachi = &dog[0..2];
 with this error:
 
 ```text
-thread '<main>' panicked at 'index 0 and/or 2 in `忠犬ハチ公` do not lie on
-character boundary'
+thread 'main' panicked at 'byte index 2 is not a char boundary; it is inside '忠'
+(bytes 0..3) of `忠犬ハチ公`'
 ```
 
 ## Concatenation

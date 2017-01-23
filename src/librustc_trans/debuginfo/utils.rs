@@ -10,7 +10,7 @@
 
 // Utility Functions.
 
-use super::{FunctionDebugContext, CrateDebugContext};
+use super::{CrateDebugContext};
 use super::namespace::item_namespace;
 
 use rustc::hir::def_id::DefId;
@@ -18,11 +18,11 @@ use rustc::hir::def_id::DefId;
 use llvm;
 use llvm::debuginfo::{DIScope, DIBuilderRef, DIDescriptor, DIArray};
 use machine;
-use common::{CrateContext, FunctionContext};
+use common::{CrateContext};
 use type_::Type;
 
-use syntax::codemap::Span;
-use syntax::{ast, codemap};
+use syntax_pos::{self, Span};
+use syntax::ast;
 
 pub fn is_node_local_to_unit(cx: &CrateContext, node_id: ast::NodeId) -> bool
 {
@@ -34,18 +34,18 @@ pub fn is_node_local_to_unit(cx: &CrateContext, node_id: ast::NodeId) -> bool
     // visible). It might better to use the `exported_items` set from
     // `driver::CrateAnalysis` in the future, but (atm) this set is not
     // available in the translation pass.
-    !cx.reachable().contains(&node_id)
+    !cx.exported_symbols().contains(&node_id)
 }
 
 #[allow(non_snake_case)]
 pub fn create_DIArray(builder: DIBuilderRef, arr: &[DIDescriptor]) -> DIArray {
     return unsafe {
-        llvm::LLVMDIBuilderGetOrCreateArray(builder, arr.as_ptr(), arr.len() as u32)
+        llvm::LLVMRustDIBuilderGetOrCreateArray(builder, arr.as_ptr(), arr.len() as u32)
     };
 }
 
-/// Return codemap::Loc corresponding to the beginning of the span
-pub fn span_start(cx: &CrateContext, span: Span) -> codemap::Loc {
+/// Return syntax_pos::Loc corresponding to the beginning of the span
+pub fn span_start(cx: &CrateContext, span: Span) -> syntax_pos::Loc {
     cx.sess().codemap().lookup_char_pos(span.lo)
 }
 
@@ -70,13 +70,6 @@ pub fn DIB(cx: &CrateContext) -> DIBuilderRef {
     cx.dbg_cx().as_ref().unwrap().builder
 }
 
-pub fn fn_should_be_ignored(fcx: &FunctionContext) -> bool {
-    match fcx.debug_context {
-        FunctionDebugContext::RegularContext(_) => false,
-        _ => true
-    }
-}
-
 pub fn get_namespace_and_span_for_item(cx: &CrateContext, def_id: DefId)
                                    -> (DIScope, Span) {
     let containing_scope = item_namespace(cx, DefId {
@@ -86,10 +79,7 @@ pub fn get_namespace_and_span_for_item(cx: &CrateContext, def_id: DefId)
     });
 
     // Try to get some span information, if we have an inlined item.
-    let definition_span = match cx.external().borrow().get(&def_id) {
-        Some(&Some(node_id)) => cx.tcx().map.span(node_id),
-        _ => cx.tcx().map.def_id_span(def_id, codemap::DUMMY_SP)
-    };
+    let definition_span = cx.tcx().def_span(def_id);
 
     (containing_scope, definition_span)
 }

@@ -17,19 +17,11 @@
 use self::pattern::Pattern;
 use self::pattern::{Searcher, ReverseSearcher, DoubleEndedSearcher};
 
-use char::{self, CharExt};
-use clone::Clone;
-use convert::AsRef;
-use default::Default;
+use char;
 use fmt;
-use iter::ExactSizeIterator;
-use iter::{Map, Cloned, Iterator, DoubleEndedIterator};
-use marker::Sized;
+use iter::{Map, Cloned, FusedIterator};
 use mem;
-use ops::{Fn, FnMut, FnOnce};
-use option::Option::{self, None, Some};
-use result::Result::{self, Ok, Err};
-use slice::{self, SliceExt};
+use slice;
 
 pub mod pattern;
 
@@ -109,7 +101,7 @@ impl FromStr for bool {
 }
 
 /// An error returned when parsing a `bool` from a string fails.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct ParseBoolError { _priv: () }
 
@@ -140,7 +132,7 @@ impl Utf8Error {
     /// verified.
     ///
     /// It is the maximum index such that `from_utf8(input[..index])`
-    /// would return `Some(_)`.
+    /// would return `Ok(_)`.
     ///
     /// # Examples
     ///
@@ -354,7 +346,7 @@ fn unwrap_or_0(opt: Option<&u8>) -> u8 {
 /// UTF-8-like encoding).
 #[unstable(feature = "str_internals", issue = "0")]
 #[inline]
-pub fn next_code_point(bytes: &mut slice::Iter<u8>) -> Option<u32> {
+pub fn next_code_point<'a, I: Iterator<Item = &'a u8>>(bytes: &mut I) -> Option<u32> {
     // Decode UTF-8
     let x = match bytes.next() {
         None => return None,
@@ -388,7 +380,9 @@ pub fn next_code_point(bytes: &mut slice::Iter<u8>) -> Option<u32> {
 /// Reads the last code point out of a byte iterator (assuming a
 /// UTF-8-like encoding).
 #[inline]
-fn next_code_point_reverse(bytes: &mut slice::Iter<u8>) -> Option<u32> {
+fn next_code_point_reverse<'a, I>(bytes: &mut I) -> Option<u32>
+    where I: DoubleEndedIterator<Item = &'a u8>,
+{
     // Decode UTF-8
     let w = match bytes.next_back() {
         None => return None,
@@ -431,12 +425,29 @@ impl<'a> Iterator for Chars<'a> {
     }
 
     #[inline]
+    fn count(self) -> usize {
+        // length in `char` is equal to the number of non-continuation bytes
+        let bytes_len = self.iter.len();
+        let mut cont_bytes = 0;
+        for &byte in self.iter {
+            cont_bytes += utf8_is_cont_byte(byte) as usize;
+        }
+        bytes_len - cont_bytes
+    }
+
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let (len, _) = self.iter.size_hint();
+        let len = self.iter.len();
         // `(len + 3)` can't overflow, because we know that the `slice::Iter`
         // belongs to a slice in memory which has a maximum length of
         // `isize::MAX` (that's well below `usize::MAX`).
         ((len + 3) / 4, Some(len))
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<char> {
+        // No need to go through the entire string.
+        self.next_back()
     }
 }
 
@@ -453,11 +464,27 @@ impl<'a> DoubleEndedIterator for Chars<'a> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a> FusedIterator for Chars<'a> {}
+
 impl<'a> Chars<'a> {
     /// View the underlying data as a subslice of the original data.
     ///
     /// This has the same lifetime as the original slice, and so the
     /// iterator can continue to be used while this exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut chars = "abc".chars();
+    ///
+    /// assert_eq!(chars.as_str(), "abc");
+    /// chars.next();
+    /// assert_eq!(chars.as_str(), "bc");
+    /// chars.next();
+    /// chars.next();
+    /// assert_eq!(chars.as_str(), "");
+    /// ```
     #[stable(feature = "iter_to_slice", since = "1.4.0")]
     #[inline]
     pub fn as_str(&self) -> &'a str {
@@ -479,12 +506,12 @@ impl<'a> Iterator for CharIndices<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<(usize, char)> {
-        let (pre_len, _) = self.iter.iter.size_hint();
+        let pre_len = self.iter.iter.len();
         match self.iter.next() {
             None => None,
             Some(ch) => {
                 let index = self.front_offset;
-                let (len, _) = self.iter.iter.size_hint();
+                let len = self.iter.iter.len();
                 self.front_offset += pre_len - len;
                 Some((index, ch))
             }
@@ -492,8 +519,19 @@ impl<'a> Iterator for CharIndices<'a> {
     }
 
     #[inline]
+    fn count(self) -> usize {
+        self.iter.count()
+    }
+
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<(usize, char)> {
+        // No need to go through the entire string.
+        self.next_back()
     }
 }
 
@@ -504,13 +542,15 @@ impl<'a> DoubleEndedIterator for CharIndices<'a> {
         match self.iter.next_back() {
             None => None,
             Some(ch) => {
-                let (len, _) = self.iter.iter.size_hint();
-                let index = self.front_offset + len;
+                let index = self.front_offset + self.iter.iter.len();
                 Some((index, ch))
             }
         }
     }
 }
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a> FusedIterator for CharIndices<'a> {}
 
 impl<'a> CharIndices<'a> {
     /// View the underlying data as a subslice of the original data.
@@ -578,7 +618,15 @@ impl<'a> ExactSizeIterator for Bytes<'a> {
     fn len(&self) -> usize {
         self.0.len()
     }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a> FusedIterator for Bytes<'a> {}
 
 /// This macro generates a Clone impl for string pattern API
 /// wrapper types of the form X<'a, P>
@@ -725,6 +773,13 @@ macro_rules! generate_pattern_iterators {
                 $reverse_iterator(self.0.clone())
             }
         }
+
+        #[unstable(feature = "fused", issue = "35602")]
+        impl<'a, P: Pattern<'a>> FusedIterator for $forward_iterator<'a, P> {}
+
+        #[unstable(feature = "fused", issue = "35602")]
+        impl<'a, P: Pattern<'a>> FusedIterator for $reverse_iterator<'a, P>
+            where P::Searcher: ReverseSearcher<'a> {}
 
         generate_pattern_iterators!($($t)* with $(#[$common_stability_attribute])*,
                                                 $forward_iterator,
@@ -1075,6 +1130,9 @@ impl<'a> DoubleEndedIterator for Lines<'a> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a> FusedIterator for Lines<'a> {}
+
 /// Created with the method [`lines_any()`].
 ///
 /// [`lines_any()`]: ../../std/primitive.str.html#method.lines_any
@@ -1138,6 +1196,10 @@ impl<'a> DoubleEndedIterator for LinesAny<'a> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+#[allow(deprecated)]
+impl<'a> FusedIterator for LinesAny<'a> {}
+
 /*
 Section: Comparing strings
 */
@@ -1170,10 +1232,15 @@ fn contains_nonascii(x: usize) -> bool {
 /// invalid sequence.
 #[inline(always)]
 fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
-    let mut offset = 0;
+    let mut index = 0;
     let len = v.len();
-    while offset < len {
-        let old_offset = offset;
+
+    let usize_bytes = mem::size_of::<usize>();
+    let ascii_block_size = 2 * usize_bytes;
+    let blocks_end = if len >= ascii_block_size { len - ascii_block_size + 1 } else { 0 };
+
+    while index < len {
+        let old_offset = index;
         macro_rules! err { () => {{
             return Err(Utf8Error {
                 valid_up_to: old_offset
@@ -1181,15 +1248,15 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
         }}}
 
         macro_rules! next { () => {{
-            offset += 1;
+            index += 1;
             // we needed data, but there was none: error!
-            if offset >= len {
+            if index >= len {
                 err!()
             }
-            v[offset]
+            v[index]
         }}}
 
-        let first = v[offset];
+        let first = v[index];
         if first >= 128 {
             let w = UTF8_CHAR_WIDTH[first as usize];
             let second = next!();
@@ -1232,38 +1299,32 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
                 }
                 _ => err!()
             }
-            offset += 1;
+            index += 1;
         } else {
             // Ascii case, try to skip forward quickly.
             // When the pointer is aligned, read 2 words of data per iteration
             // until we find a word containing a non-ascii byte.
-            let usize_bytes = mem::size_of::<usize>();
-            let bytes_per_iteration = 2 * usize_bytes;
             let ptr = v.as_ptr();
-            let align = (ptr as usize + offset) & (usize_bytes - 1);
+            let align = (ptr as usize + index) & (usize_bytes - 1);
             if align == 0 {
-                if len >= bytes_per_iteration {
-                    while offset <= len - bytes_per_iteration {
-                        unsafe {
-                            let u = *(ptr.offset(offset as isize) as *const usize);
-                            let v = *(ptr.offset((offset + usize_bytes) as isize) as *const usize);
-
-                            // break if there is a nonascii byte
-                            let zu = contains_nonascii(u);
-                            let zv = contains_nonascii(v);
-                            if zu || zv {
-                                break;
-                            }
+                while index < blocks_end {
+                    unsafe {
+                        let block = ptr.offset(index as isize) as *const usize;
+                        // break if there is a nonascii byte
+                        let zu = contains_nonascii(*block);
+                        let zv = contains_nonascii(*block.offset(1));
+                        if zu | zv {
+                            break;
                         }
-                        offset += bytes_per_iteration;
                     }
+                    index += ascii_block_size;
                 }
                 // step from the point where the wordwise loop stopped
-                while offset < len && v[offset] < 128 {
-                    offset += 1;
+                while index < len && v[index] < 128 {
+                    index += 1;
                 }
             } else {
-                offset += 1;
+                index += 1;
             }
         }
     }
@@ -1291,22 +1352,6 @@ static UTF8_CHAR_WIDTH: [u8; 256] = [
 4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0, // 0xFF
 ];
 
-/// Struct that contains a `char` and the index of the first byte of
-/// the next `char` in a string.  This can be used as a data structure
-/// for iterating over the UTF-8 bytes of a string.
-#[derive(Copy, Clone, Debug)]
-#[unstable(feature = "str_char",
-           reason = "existence of this struct is uncertain as it is frequently \
-                     able to be replaced with char.len_utf8() and/or \
-                     char/char_indices iterators",
-           issue = "27754")]
-pub struct CharRange {
-    /// Current `char`
-    pub ch: char,
-    /// Index of the first byte of the next `char`
-    pub next: usize,
-}
-
 /// Mask of the value bits of a continuation byte
 const CONT_MASK: u8 = 0b0011_1111;
 /// Value of the tag bits (tag mask is !CONT_MASK) of a continuation byte
@@ -1317,11 +1362,9 @@ Section: Trait implementations
 */
 
 mod traits {
-    use cmp::{Ord, Ordering, PartialEq, PartialOrd, Eq};
-    use option::Option;
-    use option::Option::Some;
+    use cmp::Ordering;
     use ops;
-    use str::{StrExt, eq_slice};
+    use str::eq_slice;
 
     #[stable(feature = "rust1", since = "1.0.0")]
     impl Ord for str {
@@ -1663,40 +1706,6 @@ pub trait StrExt {
         where P::Searcher: ReverseSearcher<'a>;
     #[stable(feature = "is_char_boundary", since = "1.9.0")]
     fn is_char_boundary(&self, index: usize) -> bool;
-    #[unstable(feature = "str_char",
-               reason = "often replaced by char_indices, this method may \
-                         be removed in favor of just char_at() or eventually \
-                         removed altogether",
-               issue = "27754")]
-    #[rustc_deprecated(reason = "use slicing plus chars() plus len_utf8",
-                       since = "1.9.0")]
-    fn char_range_at(&self, start: usize) -> CharRange;
-    #[unstable(feature = "str_char",
-               reason = "often replaced by char_indices, this method may \
-                         be removed in favor of just char_at_reverse() or \
-                         eventually removed altogether",
-               issue = "27754")]
-    #[rustc_deprecated(reason = "use slicing plus chars().rev() plus len_utf8",
-                       since = "1.9.0")]
-    fn char_range_at_reverse(&self, start: usize) -> CharRange;
-    #[unstable(feature = "str_char",
-               reason = "frequently replaced by the chars() iterator, this \
-                         method may be removed or possibly renamed in the \
-                         future; it is normally replaced by chars/char_indices \
-                         iterators or by getting the first char from a \
-                         subslice",
-               issue = "27754")]
-    #[rustc_deprecated(reason = "use slicing plus chars()",
-                       since = "1.9.0")]
-    fn char_at(&self, i: usize) -> char;
-    #[unstable(feature = "str_char",
-               reason = "see char_at for more details, but reverse semantics \
-                         are also somewhat unclear, especially with which \
-                         cases generate panics",
-               issue = "27754")]
-    #[rustc_deprecated(reason = "use slicing plus chars().rev()",
-                       since = "1.9.0")]
-    fn char_at_reverse(&self, i: usize) -> char;
     #[stable(feature = "core", since = "1.6.0")]
     fn as_bytes(&self) -> &[u8];
     #[stable(feature = "core", since = "1.6.0")]
@@ -1709,14 +1718,6 @@ pub trait StrExt {
     fn split_at(&self, mid: usize) -> (&str, &str);
     #[stable(feature = "core", since = "1.6.0")]
     fn split_at_mut(&mut self, mid: usize) -> (&mut str, &mut str);
-    #[unstable(feature = "str_char",
-               reason = "awaiting conventions about shifting and slices and \
-                         may not be warranted with the existence of the chars \
-                         and/or char_indices iterators",
-               issue = "27754")]
-    #[rustc_deprecated(reason = "use chars() plus Chars::as_str",
-                       since = "1.9.0")]
-    fn slice_shift_char(&self) -> Option<(char, &str)>;
     #[stable(feature = "core", since = "1.6.0")]
     fn as_ptr(&self) -> *const u8;
     #[stable(feature = "core", since = "1.6.0")]
@@ -1744,13 +1745,31 @@ fn truncate_to_char_boundary(s: &str, mut max: usize) -> (bool, &str) {
 #[cold]
 fn slice_error_fail(s: &str, begin: usize, end: usize) -> ! {
     const MAX_DISPLAY_LENGTH: usize = 256;
-    let (truncated, s) = truncate_to_char_boundary(s, MAX_DISPLAY_LENGTH);
+    let (truncated, s_trunc) = truncate_to_char_boundary(s, MAX_DISPLAY_LENGTH);
     let ellipsis = if truncated { "[...]" } else { "" };
 
+    // 1. out of bounds
+    if begin > s.len() || end > s.len() {
+        let oob_index = if begin > s.len() { begin } else { end };
+        panic!("byte index {} is out of bounds of `{}`{}", oob_index, s_trunc, ellipsis);
+    }
+
+    // 2. begin <= end
     assert!(begin <= end, "begin <= end ({} <= {}) when slicing `{}`{}",
-            begin, end, s, ellipsis);
-    panic!("index {} and/or {} in `{}`{} do not lie on character boundary",
-          begin, end, s, ellipsis);
+            begin, end, s_trunc, ellipsis);
+
+    // 3. character boundary
+    let index = if !s.is_char_boundary(begin) { begin } else { end };
+    // find the character
+    let mut char_start = index;
+    while !s.is_char_boundary(char_start) {
+        char_start -= 1;
+    }
+    // `char_start` must be less than len and a char boundary
+    let ch = s[char_start..].chars().next().unwrap();
+    let char_range = char_start .. char_start + ch.len_utf8();
+    panic!("byte index {} is not a char boundary; it is inside {:?} (bytes {:?}) of `{}`{}",
+           index, ch, char_range, s_trunc, ellipsis);
 }
 
 #[stable(feature = "core", since = "1.6.0")]
@@ -1946,55 +1965,6 @@ impl StrExt for str {
     }
 
     #[inline]
-    fn char_range_at(&self, i: usize) -> CharRange {
-        let (c, n) = char_range_at_raw(self.as_bytes(), i);
-        CharRange { ch: unsafe { char::from_u32_unchecked(c) }, next: n }
-    }
-
-    #[inline]
-    fn char_range_at_reverse(&self, start: usize) -> CharRange {
-        let mut prev = start;
-
-        prev = prev.saturating_sub(1);
-        if self.as_bytes()[prev] < 128 {
-            return CharRange{ch: self.as_bytes()[prev] as char, next: prev}
-        }
-
-        // Multibyte case is a fn to allow char_range_at_reverse to inline cleanly
-        fn multibyte_char_range_at_reverse(s: &str, mut i: usize) -> CharRange {
-            // while there is a previous byte == 10......
-            while i > 0 && s.as_bytes()[i] & !CONT_MASK == TAG_CONT_U8 {
-                i -= 1;
-            }
-
-            let first= s.as_bytes()[i];
-            let w = UTF8_CHAR_WIDTH[first as usize];
-            assert!(w != 0);
-
-            let mut val = utf8_first_byte(first, w as u32);
-            val = utf8_acc_cont_byte(val, s.as_bytes()[i + 1]);
-            if w > 2 { val = utf8_acc_cont_byte(val, s.as_bytes()[i + 2]); }
-            if w > 3 { val = utf8_acc_cont_byte(val, s.as_bytes()[i + 3]); }
-
-            CharRange {ch: unsafe { char::from_u32_unchecked(val) }, next: i}
-        }
-
-        multibyte_char_range_at_reverse(self, prev)
-    }
-
-    #[inline]
-    #[allow(deprecated)]
-    fn char_at(&self, i: usize) -> char {
-        self.char_range_at(i).ch
-    }
-
-    #[inline]
-    #[allow(deprecated)]
-    fn char_at_reverse(&self, i: usize) -> char {
-        self.char_range_at_reverse(i).ch
-    }
-
-    #[inline]
     fn as_bytes(&self) -> &[u8] {
         unsafe { mem::transmute(self) }
     }
@@ -2041,18 +2011,6 @@ impl StrExt for str {
     }
 
     #[inline]
-    #[allow(deprecated)]
-    fn slice_shift_char(&self) -> Option<(char, &str)> {
-        if self.is_empty() {
-            None
-        } else {
-            let ch = self.char_at(0);
-            let next_s = unsafe { self.slice_unchecked(ch.len_utf8(), self.len()) };
-            Some((ch, next_s))
-        }
-    }
-
-    #[inline]
     fn as_ptr(&self) -> *const u8 {
         self as *const str as *const u8
     }
@@ -2077,32 +2035,8 @@ impl AsRef<[u8]> for str {
     }
 }
 
-/// Pluck a code point out of a UTF-8-like byte slice and return the
-/// index of the next code point.
-#[inline]
-fn char_range_at_raw(bytes: &[u8], i: usize) -> (u32, usize) {
-    if bytes[i] < 128 {
-        return (bytes[i] as u32, i + 1);
-    }
-
-    // Multibyte case is a fn to allow char_range_at to inline cleanly
-    fn multibyte_char_range_at(bytes: &[u8], i: usize) -> (u32, usize) {
-        let first = bytes[i];
-        let w = UTF8_CHAR_WIDTH[first as usize];
-        assert!(w != 0);
-
-        let mut val = utf8_first_byte(first, w as u32);
-        val = utf8_acc_cont_byte(val, bytes[i + 1]);
-        if w > 2 { val = utf8_acc_cont_byte(val, bytes[i + 2]); }
-        if w > 3 { val = utf8_acc_cont_byte(val, bytes[i + 3]); }
-
-        (val, i + w as usize)
-    }
-
-    multibyte_char_range_at(bytes, i)
-}
-
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> Default for &'a str {
+    /// Creates an empty str
     fn default() -> &'a str { "" }
 }

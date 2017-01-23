@@ -8,11 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use ffi::CStr;
 use io;
-use libc::{self, c_int, size_t, sockaddr, socklen_t};
+use libc::{self, c_int, size_t, sockaddr, socklen_t, EAI_SYSTEM};
 use net::{SocketAddr, Shutdown};
 use str;
 use sys::fd::FileDesc;
@@ -35,12 +33,25 @@ use libc::SOCK_CLOEXEC;
 #[cfg(not(target_os = "linux"))]
 const SOCK_CLOEXEC: c_int = 0;
 
+// Another conditional contant for name resolution: Macos et iOS use
+// SO_NOSIGPIPE as a setsockopt flag to disable SIGPIPE emission on socket.
+// Other platforms do otherwise.
+#[cfg(target_vendor = "apple")]
+use libc::SO_NOSIGPIPE;
+#[cfg(not(target_vendor = "apple"))]
+const SO_NOSIGPIPE: c_int = 0;
+
 pub struct Socket(FileDesc);
 
 pub fn init() {}
 
 pub fn cvt_gai(err: c_int) -> io::Result<()> {
-    if err == 0 { return Ok(()) }
+    if err == 0 {
+        return Ok(())
+    }
+    if err == EAI_SYSTEM {
+        return Err(io::Error::last_os_error())
+    }
 
     let detail = unsafe {
         str::from_utf8(CStr::from_ptr(libc::gai_strerror(err)).to_bytes()).unwrap()
@@ -67,7 +78,7 @@ impl Socket {
             // this option, however, was added in 2.6.27, and we still support
             // 2.6.18 as a kernel, so if the returned error is EINVAL we
             // fallthrough to the fallback.
-            if cfg!(linux) {
+            if cfg!(target_os = "linux") {
                 match cvt(libc::socket(fam, ty | SOCK_CLOEXEC, 0)) {
                     Ok(fd) => return Ok(Socket(FileDesc::new(fd))),
                     Err(ref e) if e.raw_os_error() == Some(libc::EINVAL) => {}
@@ -77,8 +88,12 @@ impl Socket {
 
             let fd = cvt(libc::socket(fam, ty, 0))?;
             let fd = FileDesc::new(fd);
-            fd.set_cloexec();
-            Ok(Socket(fd))
+            fd.set_cloexec()?;
+            let socket = Socket(fd);
+            if cfg!(target_vendor = "apple") {
+                setsockopt(&socket, libc::SOL_SOCKET, SO_NOSIGPIPE, 1)?;
+            }
+            Ok(socket)
         }
     }
 
@@ -87,7 +102,7 @@ impl Socket {
             let mut fds = [0, 0];
 
             // Like above, see if we can set cloexec atomically
-            if cfg!(linux) {
+            if cfg!(target_os = "linux") {
                 match cvt(libc::socketpair(fam, ty | SOCK_CLOEXEC, 0, fds.as_mut_ptr())) {
                     Ok(_) => {
                         return Ok((Socket(FileDesc::new(fds[0])), Socket(FileDesc::new(fds[1]))));
@@ -99,9 +114,9 @@ impl Socket {
 
             cvt(libc::socketpair(fam, ty, 0, fds.as_mut_ptr()))?;
             let a = FileDesc::new(fds[0]);
-            a.set_cloexec();
             let b = FileDesc::new(fds[1]);
-            b.set_cloexec();
+            a.set_cloexec()?;
+            b.set_cloexec()?;
             Ok((Socket(a), Socket(b)))
         }
     }
@@ -132,7 +147,7 @@ impl Socket {
             libc::accept(self.0.raw(), storage, len)
         })?;
         let fd = FileDesc::new(fd);
-        fd.set_cloexec();
+        fd.set_cloexec()?;
         Ok(Socket(fd))
     }
 
@@ -215,7 +230,7 @@ impl Socket {
     }
 
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        let mut nonblocking = nonblocking as libc::c_ulong;
+        let mut nonblocking = nonblocking as libc::c_int;
         cvt(unsafe { libc::ioctl(*self.as_inner(), libc::FIONBIO, &mut nonblocking) }).map(|_| ())
     }
 

@@ -1,7 +1,7 @@
 % Ownership
 
-This guide is one of three presenting Rust’s ownership system. This is one of
-Rust’s most unique and compelling features, with which Rust developers should
+This is the first of three sections presenting Rust’s ownership system. This is one of
+Rust’s most distinct and compelling features, with which Rust developers should
 become quite acquainted. Ownership is how Rust achieves its largest goal,
 memory safety. There are a few distinct concepts, each with its own
 chapter:
@@ -57,17 +57,17 @@ of scope at the end of `foo()`, Rust will clean up everything related to the
 vector, even the heap-allocated memory. This happens deterministically, at the
 end of the scope.
 
-We'll cover [vectors] in detail later in this chapter; we only use them
+We covered [vectors] in the previous chapter; we use them
 here as an example of a type that allocates space on the heap at runtime. They
 behave like [arrays], except their size may change by `push()`ing more
 elements onto them.
 
 Vectors have a [generic type][generics] `Vec<T>`, so in this example `v` will have type
-`Vec<i32>`. We'll cover generics in detail later in this chapter.
+`Vec<i32>`. We'll cover [generics] in detail in a later chapter.
 
 [arrays]: primitive-types.html#arrays
 [vectors]: vectors.html
-[heap]: the-stack-and-the-heap.html
+[heap]: the-stack-and-the-heap.html#the-heap
 [stack]: the-stack-and-the-heap.html#the-stack
 [bindings]: variable-bindings.html
 [generics]: generics.html
@@ -107,7 +107,7 @@ try to use something after we’ve passed it as an argument:
 
 ```rust,ignore
 fn take(v: Vec<i32>) {
-    // what happens here isn’t important.
+    // What happens here isn’t important.
 }
 
 let v = vec![1, 2, 3];
@@ -136,6 +136,8 @@ Rust allocates memory for an integer [i32] on the [stack][sh], copies the bit
 pattern representing the value of 10 to the allocated memory and binds the
 variable name x to this memory region for future reference.
 
+[i32]: primitive-types.html#numeric-types
+
 Now consider the following code fragment:
 
 ```rust
@@ -155,7 +157,7 @@ vector object and its data live in separate memory regions instead of being a
 single contiguous memory allocation (due to reasons we will not go into at
 this point of time). These two parts of the vector (the one on the stack and
 one on the heap) must agree with each other at all times with regards to
-things like the length, capacity etc.
+things like the length, capacity, etc.
 
 When we move `v` to `v2`, Rust actually does a bitwise copy of the vector
 object `v` into the stack allocation represented by `v2`. This shallow copy
@@ -212,7 +214,7 @@ But, unlike a move, we can still use `v` afterward. This is because an `i32`
 has no pointers to data somewhere else, copying it is a full copy.
 
 All primitive types implement the `Copy` trait and their ownership is
-therefore not moved like one would assume, following the ´ownership rules´.
+therefore not moved like one would assume, following the ‘ownership rules’.
 To give an example, the two following snippets of code only compile because the
 `i32` and `bool` types implement the `Copy` trait.
 
@@ -262,9 +264,9 @@ Of course, if we had to hand ownership back with every function we wrote:
 
 ```rust
 fn foo(v: Vec<i32>) -> Vec<i32> {
-    // do stuff with v
+    // Do stuff with `v`.
 
-    // hand back ownership
+    // Hand back ownership.
     v
 }
 ```
@@ -273,9 +275,9 @@ This would get very tedious. It gets worse the more things we want to take owner
 
 ```rust
 fn foo(v1: Vec<i32>, v2: Vec<i32>) -> (Vec<i32>, Vec<i32>, i32) {
-    // do stuff with v1 and v2
+    // Do stuff with `v1` and `v2`.
 
-    // hand back ownership, and the result of our function
+    // Hand back ownership, and the result of our function.
     (v1, v2, 42)
 }
 
@@ -288,6 +290,6 @@ let (v1, v2, answer) = foo(v1, v2);
 Ugh! The return type, return line, and calling the function gets way more
 complicated.
 
-Luckily, Rust offers a feature, borrowing, which helps us solve this problem.
-It’s the topic of the next section!
+Luckily, Rust offers a feature which helps us solve this problem.
+It’s called borrowing and is the topic of the next section!
 

@@ -56,10 +56,11 @@ impl Category {
             ExprKind::LogicalOp { .. } |
             ExprKind::If { .. } |
             ExprKind::Match { .. } |
+            ExprKind::NeverToAny { .. } |
             ExprKind::Call { .. } =>
                 Some(Category::Rvalue(RvalueFunc::Into)),
 
-            ExprKind::Vec { .. } |
+            ExprKind::Array { .. } |
             ExprKind::Tuple { .. } |
             ExprKind::Adt { .. } |
             ExprKind::Closure { .. } |
@@ -67,6 +68,7 @@ impl Category {
             ExprKind::Binary { .. } |
             ExprKind::Box { .. } |
             ExprKind::Cast { .. } |
+            ExprKind::Use { .. } |
             ExprKind::ReifyFnPointer { .. } |
             ExprKind::UnsafeFnPointer { .. } |
             ExprKind::Unsize { .. } |

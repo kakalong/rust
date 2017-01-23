@@ -8,52 +8,85 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use rustc::mir::repr as mir;
-use common::BlockAndBuilder;
-use debuginfo::DebugLoc;
+use rustc::mir;
+
+use base;
+use common;
+use builder::Builder;
 
 use super::MirContext;
-use super::TempRef;
+use super::LocalRef;
+use super::super::adt;
+use super::super::disr::Disr;
 
-impl<'bcx, 'tcx> MirContext<'bcx, 'tcx> {
+impl<'a, 'tcx> MirContext<'a, 'tcx> {
     pub fn trans_statement(&mut self,
-                           bcx: BlockAndBuilder<'bcx, 'tcx>,
+                           bcx: Builder<'a, 'tcx>,
                            statement: &mir::Statement<'tcx>)
-                           -> BlockAndBuilder<'bcx, 'tcx> {
+                           -> Builder<'a, 'tcx> {
         debug!("trans_statement(statement={:?})", statement);
 
-        let debug_loc = DebugLoc::ScopeAt(self.scopes[statement.scope.index()],
-                                          statement.span);
-        debug_loc.apply_to_bcx(&bcx);
-        debug_loc.apply(bcx.fcx());
+        self.set_debug_loc(&bcx, statement.source_info);
         match statement.kind {
             mir::StatementKind::Assign(ref lvalue, ref rvalue) => {
-                match *lvalue {
-                    mir::Lvalue::Temp(index) => {
-                        let index = index as usize;
-                        match self.temps[index as usize] {
-                            TempRef::Lvalue(tr_dest) => {
-                                self.trans_rvalue(bcx, tr_dest, rvalue, debug_loc)
-                            }
-                            TempRef::Operand(None) => {
-                                let (bcx, operand) = self.trans_rvalue_operand(bcx, rvalue,
-                                                                               debug_loc);
-                                self.temps[index] = TempRef::Operand(Some(operand));
-                                bcx
-                            }
-                            TempRef::Operand(Some(_)) => {
-                                span_bug!(statement.span,
+                if let mir::Lvalue::Local(index) = *lvalue {
+                    match self.locals[index] {
+                        LocalRef::Lvalue(tr_dest) => {
+                            self.trans_rvalue(bcx, tr_dest, rvalue)
+                        }
+                        LocalRef::Operand(None) => {
+                            let (bcx, operand) = self.trans_rvalue_operand(bcx, rvalue);
+                            self.locals[index] = LocalRef::Operand(Some(operand));
+                            bcx
+                        }
+                        LocalRef::Operand(Some(_)) => {
+                            let ty = self.monomorphized_lvalue_ty(lvalue);
+
+                            if !common::type_is_zero_size(bcx.ccx, ty) {
+                                span_bug!(statement.source_info.span,
                                           "operand {:?} already assigned",
                                           rvalue);
+                            } else {
+                                // If the type is zero-sized, it's already been set here,
+                                // but we still need to make sure we translate the operand
+                                self.trans_rvalue_operand(bcx, rvalue).0
                             }
                         }
                     }
-                    _ => {
-                        let tr_dest = self.trans_lvalue(&bcx, lvalue);
-                        self.trans_rvalue(bcx, tr_dest, rvalue, debug_loc)
-                    }
+                } else {
+                    let tr_dest = self.trans_lvalue(&bcx, lvalue);
+                    self.trans_rvalue(bcx, tr_dest, rvalue)
                 }
             }
+            mir::StatementKind::SetDiscriminant{ref lvalue, variant_index} => {
+                let ty = self.monomorphized_lvalue_ty(lvalue);
+                let lvalue_transed = self.trans_lvalue(&bcx, lvalue);
+                adt::trans_set_discr(&bcx,
+                    ty,
+                    lvalue_transed.llval,
+                    Disr::from(variant_index));
+                bcx
+            }
+            mir::StatementKind::StorageLive(ref lvalue) => {
+                self.trans_storage_liveness(bcx, lvalue, base::Lifetime::Start)
+            }
+            mir::StatementKind::StorageDead(ref lvalue) => {
+                self.trans_storage_liveness(bcx, lvalue, base::Lifetime::End)
+            }
+            mir::StatementKind::Nop => bcx,
         }
+    }
+
+    fn trans_storage_liveness(&self,
+                              bcx: Builder<'a, 'tcx>,
+                              lvalue: &mir::Lvalue<'tcx>,
+                              intrinsic: base::Lifetime)
+                              -> Builder<'a, 'tcx> {
+        if let mir::Lvalue::Local(index) = *lvalue {
+            if let LocalRef::Lvalue(tr_lval) = self.locals[index] {
+                intrinsic.call(&bcx, tr_lval.llval);
+            }
+        }
+        bcx
     }
 }

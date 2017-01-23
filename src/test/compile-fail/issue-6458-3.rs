@@ -12,5 +12,7 @@ use std::mem;
 
 fn main() {
     mem::transmute(0);
-    //~^ ERROR type annotations or generic parameter binding required
+    //~^ ERROR unable to infer enough type information about `U` [E0282]
+    //~| NOTE cannot infer type for `U`
+    //~| NOTE type annotations or generic parameter binding
 }

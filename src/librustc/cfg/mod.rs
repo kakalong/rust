@@ -58,13 +58,13 @@ pub type CFGNode = graph::Node<CFGNodeData>;
 pub type CFGEdge = graph::Edge<CFGEdgeData>;
 
 impl CFG {
-    pub fn new(tcx: &TyCtxt,
-               blk: &hir::Block) -> CFG {
-        construct::construct(tcx, blk)
+    pub fn new<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                         body: &hir::Expr) -> CFG {
+        construct::construct(tcx, body)
     }
 
     pub fn node_is_reachable(&self, id: ast::NodeId) -> bool {
-        self.graph.depth_traverse(self.entry)
+        self.graph.depth_traverse(self.entry, graph::OUTGOING)
                   .any(|idx| self.graph.node_data(idx).id() == id)
     }
 }

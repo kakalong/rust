@@ -12,10 +12,10 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use prelude::v1::*;
-
+use fmt;
 use mem;
 use ops::Range;
+use iter::FusedIterator;
 
 /// Extension methods for ASCII-subset only operations on string slices.
 ///
@@ -368,6 +368,16 @@ impl DoubleEndedIterator for EscapeDefault {
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl ExactSizeIterator for EscapeDefault {}
+#[unstable(feature = "fused", issue = "35602")]
+impl FusedIterator for EscapeDefault {}
+
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for EscapeDefault {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("EscapeDefault { .. }")
+    }
+}
+
 
 static ASCII_LOWERCASE_MAP: [u8; 256] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -450,7 +460,6 @@ static ASCII_UPPERCASE_MAP: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
-    use prelude::v1::*;
     use super::*;
     use char::from_u32;
 

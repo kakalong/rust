@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // revisions: rpass1 rpass2
+// compile-flags: -Z query-dep-graph
 
 #![allow(warnings)]
 #![feature(rustc_attrs)]
@@ -16,24 +17,20 @@
 // Here the only thing which changes is the string constant in `x`.
 // Therefore, the compiler deduces (correctly) that typeck is not
 // needed even for callers of `x`.
-//
-// It is not entirely clear why `TransCrateItem` invalidates `y` and
-// `z`, actually, I think it's because of the structure of
-// trans. -nmatsakis
 
 fn main() { }
 
 mod x {
     #[cfg(rpass1)]
     pub fn x() {
-        println!("1");
+        println!("{}", "1");
     }
 
     #[cfg(rpass2)]
     #[rustc_dirty(label="TypeckItemBody", cfg="rpass2")]
     #[rustc_dirty(label="TransCrateItem", cfg="rpass2")]
     pub fn x() {
-        println!("2");
+        println!("{}", "2");
     }
 }
 

@@ -9,8 +9,18 @@
 // except according to those terms.
 
 use std::fmt::Debug;
+use std::sync::Arc;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+macro_rules! try_opt {
+    ($e:expr) => (
+        match $e {
+            Some(r) => r,
+            None => return None,
+        }
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
 pub enum DepNode<D: Clone + Debug> {
     // The `D` type is "how definitions are identified".
     // During compilation, it is always `DefId`, but when serializing
@@ -32,8 +42,19 @@ pub enum DepNode<D: Clone + Debug> {
     // Represents the HIR node with the given node-id
     Hir(D),
 
+    // Represents the body of a function or method. The def-id is that of the
+    // function/method.
+    HirBody(D),
+
+    // Represents the metadata for a given HIR node, typically found
+    // in an extern crate.
+    MetaData(D),
+
+    // Represents some artifact that we save to disk. Note that these
+    // do not have a def-id as part of their identifier.
+    WorkProduct(Arc<WorkProductId>),
+
     // Represents different phases in the compiler.
-    CrateReader,
     CollectLanguageItems,
     CheckStaticRecursion,
     ResolveLifetimes,
@@ -42,6 +63,7 @@ pub enum DepNode<D: Clone + Debug> {
     PluginRegistrar,
     StabilityIndex,
     CollectItem(D),
+    CollectItemSig(D),
     Coherence,
     EffectCheck,
     Liveness,
@@ -59,38 +81,39 @@ pub enum DepNode<D: Clone + Debug> {
     TypeckItemBody(D),
     Dropck,
     DropckImpl(D),
+    UnusedTraitCheck,
     CheckConst(D),
     Privacy,
     IntrinsicCheck(D),
     MatchCheck(D),
-    MirMapConstruction(D),
-    MirTypeck(D),
+
+    // Represents the MIR for a fn; also used as the task node for
+    // things read/modify that MIR.
+    Mir(D),
+
     BorrowCheck(D),
     RvalueCheck(D),
     Reachability,
     DeadCheck,
-    StabilityCheck,
+    StabilityCheck(D),
     LateLintCheck,
     TransCrate,
     TransCrateItem(D),
     TransInlinedItem(D),
     TransWriteMetadata,
+    LinkBinary,
 
     // Nodes representing bits of computed IR in the tcx. Each shared
     // table in the tcx (or elsewhere) maps to one of these
     // nodes. Often we map multiple tables to the same node if there
     // is no point in distinguishing them (e.g., both the type and
-    // predicates for an item wind up in `ItemSignature`). Other
-    // times, such as `ImplItems` vs `TraitItemDefIds`, tables which
-    // might be mergable are kept distinct because the sets of def-ids
-    // to which they apply are disjoint, and hence we might as well
-    // have distinct labels for easier debugging.
-    ImplOrTraitItems(D),
+    // predicates for an item wind up in `ItemSignature`).
+    AssociatedItems(D),
     ItemSignature(D),
-    FieldTy(D),
-    TraitItemDefIds(D),
+    SizedConstraint(D),
+    AssociatedItemDefIds(D),
     InherentImpls(D),
-    ImplItems(D),
+    Tables(D),
 
     // The set of impls for a given trait. Ultimately, it would be
     // nice to get more fine-grained here (e.g., to include a
@@ -108,7 +131,7 @@ pub enum DepNode<D: Clone + Debug> {
     // which would yield an overly conservative dep-graph.
     TraitItems(D),
     ReprHints(D),
-    TraitSelect(D),
+    TraitSelect(Vec<D>),
 }
 
 impl<D: Clone + Debug> DepNode<D> {
@@ -123,18 +146,24 @@ impl<D: Clone + Debug> DepNode<D> {
             }
         }
 
+        if label == "Krate" {
+            // special case
+            return Ok(DepNode::Krate);
+        }
+
         check! {
             CollectItem,
             BorrowCheck,
+            Hir,
+            HirBody,
             TransCrateItem,
             TypeckItemType,
             TypeckItemBody,
-            ImplOrTraitItems,
+            AssociatedItems,
             ItemSignature,
-            FieldTy,
-            TraitItemDefIds,
+            AssociatedItemDefIds,
             InherentImpls,
-            ImplItems,
+            Tables,
             TraitImpls,
             ReprHints,
         }
@@ -147,7 +176,6 @@ impl<D: Clone + Debug> DepNode<D> {
 
         match *self {
             Krate => Some(Krate),
-            CrateReader => Some(CrateReader),
             CollectLanguageItems => Some(CollectLanguageItems),
             CheckStaticRecursion => Some(CheckStaticRecursion),
             ResolveLifetimes => Some(ResolveLifetimes),
@@ -163,15 +191,24 @@ impl<D: Clone + Debug> DepNode<D> {
             CheckEntryFn => Some(CheckEntryFn),
             Variance => Some(Variance),
             Dropck => Some(Dropck),
+            UnusedTraitCheck => Some(UnusedTraitCheck),
             Privacy => Some(Privacy),
             Reachability => Some(Reachability),
             DeadCheck => Some(DeadCheck),
-            StabilityCheck => Some(StabilityCheck),
             LateLintCheck => Some(LateLintCheck),
             TransCrate => Some(TransCrate),
             TransWriteMetadata => Some(TransWriteMetadata),
+            LinkBinary => Some(LinkBinary),
+
+            // work product names do not need to be mapped, because
+            // they are always absolute.
+            WorkProduct(ref id) => Some(WorkProduct(id.clone())),
+
             Hir(ref d) => op(d).map(Hir),
+            HirBody(ref d) => op(d).map(HirBody),
+            MetaData(ref d) => op(d).map(MetaData),
             CollectItem(ref d) => op(d).map(CollectItem),
+            CollectItemSig(ref d) => op(d).map(CollectItemSig),
             CoherenceCheckImpl(ref d) => op(d).map(CoherenceCheckImpl),
             CoherenceOverlapCheck(ref d) => op(d).map(CoherenceOverlapCheck),
             CoherenceOverlapCheckSpecial(ref d) => op(d).map(CoherenceOverlapCheckSpecial),
@@ -184,22 +221,34 @@ impl<D: Clone + Debug> DepNode<D> {
             CheckConst(ref d) => op(d).map(CheckConst),
             IntrinsicCheck(ref d) => op(d).map(IntrinsicCheck),
             MatchCheck(ref d) => op(d).map(MatchCheck),
-            MirMapConstruction(ref d) => op(d).map(MirMapConstruction),
-            MirTypeck(ref d) => op(d).map(MirTypeck),
+            Mir(ref d) => op(d).map(Mir),
             BorrowCheck(ref d) => op(d).map(BorrowCheck),
             RvalueCheck(ref d) => op(d).map(RvalueCheck),
+            StabilityCheck(ref d) => op(d).map(StabilityCheck),
             TransCrateItem(ref d) => op(d).map(TransCrateItem),
             TransInlinedItem(ref d) => op(d).map(TransInlinedItem),
-            ImplOrTraitItems(ref d) => op(d).map(ImplOrTraitItems),
+            AssociatedItems(ref d) => op(d).map(AssociatedItems),
             ItemSignature(ref d) => op(d).map(ItemSignature),
-            FieldTy(ref d) => op(d).map(FieldTy),
-            TraitItemDefIds(ref d) => op(d).map(TraitItemDefIds),
+            SizedConstraint(ref d) => op(d).map(SizedConstraint),
+            AssociatedItemDefIds(ref d) => op(d).map(AssociatedItemDefIds),
             InherentImpls(ref d) => op(d).map(InherentImpls),
-            ImplItems(ref d) => op(d).map(ImplItems),
+            Tables(ref d) => op(d).map(Tables),
             TraitImpls(ref d) => op(d).map(TraitImpls),
             TraitItems(ref d) => op(d).map(TraitItems),
             ReprHints(ref d) => op(d).map(ReprHints),
-            TraitSelect(ref d) => op(d).map(TraitSelect),
+            TraitSelect(ref type_ds) => {
+                let type_ds = try_opt!(type_ds.iter().map(|d| op(d)).collect());
+                Some(TraitSelect(type_ds))
+            }
         }
     }
 }
+
+/// A "work product" corresponds to a `.o` (or other) file that we
+/// save in between runs. These ids do not have a DefId but rather
+/// some independent path or string that persists between runs without
+/// the need to be mapped or unmapped. (This ensures we can serialize
+/// them even in the absence of a tcx.)
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+pub struct WorkProductId(pub String);
+

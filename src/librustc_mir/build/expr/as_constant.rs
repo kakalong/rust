@@ -12,9 +12,9 @@
 
 use build::Builder;
 use hair::*;
-use rustc::mir::repr::*;
+use rustc::mir::*;
 
-impl<'a,'tcx> Builder<'a,'tcx> {
+impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// Compile `expr`, yielding a compile-time constant. Assumes that
     /// `expr` is a valid compile-time constant!
     pub fn as_constant<M>(&mut self, expr: M) -> Constant<'tcx>

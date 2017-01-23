@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use fmt;
 use sync::{Mutex, Condvar};
 
 /// A barrier enables multiple threads to synchronize the beginning
@@ -54,6 +55,13 @@ struct BarrierState {
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BarrierWaitResult(bool);
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Barrier {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Barrier { .. }")
+    }
+}
+
 impl Barrier {
     /// Creates a new barrier that can block a given number of threads.
     ///
@@ -71,7 +79,7 @@ impl Barrier {
         }
     }
 
-    /// Blocks the current thread until all threads has rendezvoused here.
+    /// Blocks the current thread until all threads have rendezvoused here.
     ///
     /// Barriers are re-usable after all threads have rendezvoused once, and can
     /// be used continuously.
@@ -102,6 +110,15 @@ impl Barrier {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for BarrierWaitResult {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("BarrierWaitResult")
+            .field("is_leader", &self.is_leader())
+            .finish()
+    }
+}
+
 impl BarrierWaitResult {
     /// Returns whether this thread from `wait` is the "leader thread".
     ///
@@ -113,13 +130,12 @@ impl BarrierWaitResult {
 
 #[cfg(test)]
 mod tests {
-    use prelude::v1::*;
-
     use sync::{Arc, Barrier};
     use sync::mpsc::{channel, TryRecvError};
     use thread;
 
     #[test]
+    #[cfg_attr(target_os = "emscripten", ignore)]
     fn test_barrier() {
         const N: usize = 10;
 

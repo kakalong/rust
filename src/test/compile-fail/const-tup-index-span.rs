@@ -10,8 +10,9 @@
 
 // Test spans of errors
 
-const TUP: (usize,) = 5 << 64;
-//~^ ERROR: attempted to shift left with overflow [E0250]
+const TUP: (usize,) = 5usize << 64;
+//~^ ERROR E0080
+//~| attempt to shift left with overflow
 const ARR: [i32; TUP.0] = [];
 
 fn main() {

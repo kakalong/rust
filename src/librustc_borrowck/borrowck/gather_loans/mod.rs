@@ -18,21 +18,19 @@
 
 use borrowck::*;
 use borrowck::move_data::MoveData;
+use rustc::infer::InferCtxt;
 use rustc::middle::expr_use_visitor as euv;
-use rustc::infer;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::region;
 use rustc::ty::{self, TyCtxt};
-use rustc::traits::ProjectionMode;
 
 use syntax::ast;
-use syntax::codemap::Span;
-use syntax::ast::NodeId;
+use syntax_pos::Span;
 use rustc::hir;
 use rustc::hir::Expr;
 use rustc::hir::intravisit;
-use rustc::hir::intravisit::Visitor;
+use rustc::hir::intravisit::{Visitor, NestedVisitorMap};
 
 use self::restrictions::RestrictionResult;
 
@@ -42,28 +40,21 @@ mod gather_moves;
 mod move_error;
 
 pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
-                                    fn_id: NodeId,
-                                    decl: &hir::FnDecl,
-                                    body: &hir::Block)
+                                    body: hir::BodyId)
                                     -> (Vec<Loan<'tcx>>,
                                         move_data::MoveData<'tcx>) {
+    let infcx = bccx.tcx.borrowck_fake_infer_ctxt(body);
     let mut glcx = GatherLoanCtxt {
         bccx: bccx,
+        infcx: &infcx,
         all_loans: Vec::new(),
-        item_ub: bccx.tcx.region_maps.node_extent(body.id),
+        item_ub: bccx.tcx.region_maps.node_extent(body.node_id),
         move_data: MoveData::new(),
         move_error_collector: move_error::MoveErrorCollector::new(),
     };
 
-    let param_env = ty::ParameterEnvironment::for_item(bccx.tcx, fn_id);
-    let infcx = infer::new_infer_ctxt(bccx.tcx,
-                                      &bccx.tcx.tables,
-                                      Some(param_env),
-                                      ProjectionMode::AnyFinal);
-    {
-        let mut euv = euv::ExprUseVisitor::new(&mut glcx, &infcx);
-        euv.walk_fn(decl, body);
-    }
+    let body = glcx.bccx.tcx.map.body(body);
+    euv::ExprUseVisitor::new(&mut glcx, &infcx).consume_body(body);
 
     glcx.report_potential_errors();
     let GatherLoanCtxt { all_loans, move_data, .. } = glcx;
@@ -72,6 +63,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 
 struct GatherLoanCtxt<'a, 'tcx: 'a> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
+    infcx: &'a InferCtxt<'a, 'tcx, 'tcx>,
     move_data: move_data::MoveData<'tcx>,
     move_error_collector: move_error::MoveErrorCollector<'tcx>,
     all_loans: Vec<Loan<'tcx>>,
@@ -138,7 +130,7 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
               borrow_id: ast::NodeId,
               borrow_span: Span,
               cmt: mc::cmt<'tcx>,
-              loan_region: ty::Region,
+              loan_region: &'tcx ty::Region,
               bk: ty::BorrowKind,
               loan_cause: euv::LoanCause)
     {
@@ -167,8 +159,9 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
                                         mode);
     }
 
-    fn decl_without_init(&mut self, id: ast::NodeId, span: Span) {
-        gather_moves::gather_decl(self.bccx, &self.move_data, id, span, id);
+    fn decl_without_init(&mut self, id: ast::NodeId, _span: Span) {
+        let ty = self.infcx.tables.borrow().node_id_to_type(id);
+        gather_moves::gather_decl(self.bccx, &self.move_data, id, ty);
     }
 }
 
@@ -180,7 +173,7 @@ fn check_aliasability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                 req_kind: ty::BorrowKind)
                                 -> Result<(),()> {
 
-    let aliasability = cmt.freely_aliasable(bccx.tcx);
+    let aliasability = cmt.freely_aliasable();
     debug!("check_aliasability aliasability={:?} req_kind={:?}",
            aliasability, req_kind);
 
@@ -213,7 +206,7 @@ fn check_aliasability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                         alias_cause);
             Err(())
         }
-        (_, _) => {
+        (..) => {
             Ok(())
         }
     }
@@ -257,7 +250,7 @@ fn check_mutability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
-    pub fn tcx(&self) -> &'a TyCtxt<'tcx> { self.bccx.tcx }
+    pub fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx> { self.bccx.tcx }
 
     /// Guarantees that `cmt` is assignable, or reports an error.
     fn guarantee_assignment_valid(&mut self,
@@ -315,7 +308,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                        borrow_span: Span,
                        cmt: mc::cmt<'tcx>,
                        req_kind: ty::BorrowKind,
-                       loan_region: ty::Region,
+                       loan_region: &'tcx ty::Region,
                        cause: euv::LoanCause) {
         debug!("guarantee_valid(borrow_id={}, cmt={:?}, \
                 req_mutbl={:?}, loan_region={:?})",
@@ -326,7 +319,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
 
         // a loan for the empty region can never be dereferenced, so
         // it is always safe
-        if loan_region == ty::ReEmpty {
+        if *loan_region == ty::ReEmpty {
             return;
         }
 
@@ -366,7 +359,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
             }
 
             RestrictionResult::SafeIf(loan_path, restricted_paths) => {
-                let loan_scope = match loan_region {
+                let loan_scope = match *loan_region {
                     ty::ReScope(scope) => scope,
 
                     ty::ReFree(ref fr) => fr.scope,
@@ -377,7 +370,8 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                     ty::ReLateBound(..) |
                     ty::ReEarlyBound(..) |
                     ty::ReVar(..) |
-                    ty::ReSkolemized(..) => {
+                    ty::ReSkolemized(..) |
+                    ty::ReErased => {
                         span_bug!(
                             cmt.span,
                             "invalid borrow lifetime: {:?}",
@@ -524,22 +518,25 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
 /// sure the loans being taken are sound.
 struct StaticInitializerCtxt<'a, 'tcx: 'a> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
+    body_id: hir::BodyId,
 }
 
-impl<'a, 'tcx, 'v> Visitor<'v> for StaticInitializerCtxt<'a, 'tcx> {
-    fn visit_expr(&mut self, ex: &Expr) {
+impl<'a, 'tcx> Visitor<'tcx> for StaticInitializerCtxt<'a, 'tcx> {
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::None
+    }
+
+    fn visit_expr(&mut self, ex: &'tcx Expr) {
         if let hir::ExprAddrOf(mutbl, ref base) = ex.node {
-            let infcx = infer::new_infer_ctxt(self.bccx.tcx,
-                                              &self.bccx.tcx.tables,
-                                              None,
-                                              ProjectionMode::AnyFinal);
+            let infcx = self.bccx.tcx.borrowck_fake_infer_ctxt(self.body_id);
             let mc = mc::MemCategorizationContext::new(&infcx);
             let base_cmt = mc.cat_expr(&base).unwrap();
             let borrow_kind = ty::BorrowKind::from_mutbl(mutbl);
             // Check that we don't allow borrows of unsafe static items.
-            if check_aliasability(self.bccx, ex.span,
-                                  BorrowViolation(euv::AddrOf),
-                                  base_cmt, borrow_kind).is_err() {
+            let err = check_aliasability(self.bccx, ex.span,
+                                         BorrowViolation(euv::AddrOf),
+                                         base_cmt, borrow_kind).is_err();
+            if err {
                 return; // reported an error, no sense in reporting more.
             }
         }
@@ -548,13 +545,14 @@ impl<'a, 'tcx, 'v> Visitor<'v> for StaticInitializerCtxt<'a, 'tcx> {
     }
 }
 
-pub fn gather_loans_in_static_initializer(bccx: &mut BorrowckCtxt, expr: &hir::Expr) {
-
-    debug!("gather_loans_in_static_initializer(expr={:?})", expr);
+pub fn gather_loans_in_static_initializer(bccx: &mut BorrowckCtxt, body: hir::BodyId) {
+    debug!("gather_loans_in_static_initializer(expr={:?})", body);
 
     let mut sicx = StaticInitializerCtxt {
-        bccx: bccx
+        bccx: bccx,
+        body_id: body
     };
 
-    sicx.visit_expr(expr);
+    let body = sicx.bccx.tcx.map.body(body);
+    sicx.visit_body(body);
 }

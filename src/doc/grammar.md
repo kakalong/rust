@@ -172,6 +172,11 @@ token : simple_token | ident | literal | symbol | whitespace token ;
 Each of these keywords has special meaning in its grammar, and all of them are
 excluded from the `ident` rule.
 
+Not all of these keywords are used by the language. Some of them were used
+before Rust 1.0, and were left reserved once their implementations were
+removed. Some of them were reserved before 1.0 to make space for possible
+future features.
+
 ### Literals
 
 ```antlr
@@ -757,6 +762,13 @@ lifetime-list := lifetime | lifetime ',' lifetime-list
 arg-list := ident ':' type | ident ':' type ',' arg-list
 bound-list := bound | bound '+' bound-list
 bound := path | lifetime
+```
+
+### Never type
+An empty type
+
+```antlr
+never_type : "!" ;
 ```
 
 ### Object types

@@ -78,7 +78,7 @@ macro_rules! vec {
 
 Whoa, that’s a lot of new syntax! Let’s break it down.
 
-```ignore
+```rust,ignore
 macro_rules! vec { ... }
 ```
 
@@ -92,7 +92,7 @@ syntax and serves to distinguish a macro from an ordinary function.
 The macro is defined through a series of rules, which are pattern-matching
 cases. Above, we had
 
-```ignore
+```rust,ignore
 ( $( $x:expr ),* ) => { ... };
 ```
 
@@ -112,7 +112,7 @@ separated by commas.
 Aside from the special matcher syntax, any Rust tokens that appear in a matcher
 must match exactly. For example,
 
-```rust
+```rust,ignore
 macro_rules! foo {
     (x => $e:expr) => (println!("mode X: {}", $e));
     (y => $e:expr) => (println!("mode Y: {}", $e));
@@ -147,7 +147,7 @@ The right-hand side of a macro rule is ordinary Rust syntax, for the most part.
 But we can splice in bits of syntax captured by the matcher. From the original
 example:
 
-```ignore
+```rust,ignore
 $(
     temp_vec.push($x);
 )*
@@ -165,7 +165,7 @@ within the repeated block.
 Another detail: the `vec!` macro has *two* pairs of braces on the right-hand
 side. They are often combined like so:
 
-```ignore
+```rust,ignore
 macro_rules! foo {
     () => {{
         ...
@@ -328,7 +328,7 @@ invocation site. Code such as the following will not work:
 
 ```rust,ignore
 macro_rules! foo {
-    () => (let x = 3);
+    () => (let x = 3;);
 }
 
 fn main() {
@@ -342,7 +342,7 @@ tagged with the right syntax context.
 
 ```rust
 macro_rules! foo {
-    ($v:ident) => (let $v = 3);
+    ($v:ident) => (let $v = 3;);
 }
 
 fn main() {
@@ -533,33 +533,33 @@ An example:
 ```rust
 macro_rules! m1 { () => (()) }
 
-// visible here: m1
+// Visible here: `m1`.
 
 mod foo {
-    // visible here: m1
+    // Visible here: `m1`.
 
     #[macro_export]
     macro_rules! m2 { () => (()) }
 
-    // visible here: m1, m2
+    // Visible here: `m1`, `m2`.
 }
 
-// visible here: m1
+// Visible here: `m1`.
 
 macro_rules! m3 { () => (()) }
 
-// visible here: m1, m3
+// Visible here: `m1`, `m3`.
 
 #[macro_use]
 mod bar {
-    // visible here: m1, m3
+    // Visible here: `m1`, `m3`.
 
     macro_rules! m4 { () => (()) }
 
-    // visible here: m1, m3, m4
+    // Visible here: `m1`, `m3`, `m4`.
 }
 
-// visible here: m1, m3, m4
+// Visible here: `m1`, `m3`, `m4`.
 # fn main() { }
 ```
 
@@ -644,7 +644,7 @@ macro_rules! bct {
     (1, $p:tt, $($ps:tt),* ; $($ds:tt),*)
         => (bct!($($ps),*, 1, $p ; $($ds),*));
 
-    // halt on empty data string
+    // Halt on empty data string:
     ( $($ps:tt),* ; )
         => (());
 }
@@ -662,7 +662,7 @@ Here are some common macros you’ll see in Rust code.
 This macro causes the current thread to panic. You can give it a message
 to panic with:
 
-```rust,no_run
+```rust,should_panic
 panic!("oh no!");
 ```
 
@@ -688,13 +688,13 @@ These two macros are used in tests. `assert!` takes a boolean. `assert_eq!`
 takes two values and checks them for equality. `true` passes, `false` `panic!`s.
 Like this:
 
-```rust,no_run
+```rust,should_panic
 // A-ok!
 
 assert!(true);
 assert_eq!(5, 3 + 2);
 
-// nope :(
+// Nope :(
 
 assert!(5 < 3);
 assert_eq!(5, 3);

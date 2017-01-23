@@ -14,24 +14,25 @@
 //! [`ToString`]s, and several error types that may result from working with
 //! [`String`]s.
 //!
-//! [`String`]: struct.String.html
 //! [`ToString`]: trait.ToString.html
 //!
 //! # Examples
 //!
-//! There are multiple ways to create a new `String` from a string literal:
+//! There are multiple ways to create a new [`String`] from a string literal:
 //!
-//! ```rust
+//! ```
 //! let s = "Hello".to_string();
 //!
 //! let s = String::from("world");
 //! let s: String = "also this".into();
 //! ```
 //!
-//! You can create a new `String` from an existing one by concatenating with
+//! You can create a new [`String`] from an existing one by concatenating with
 //! `+`:
 //!
-//! ```rust
+//! [`String`]: struct.String.html
+//!
+//! ```
 //! let s = "Hello".to_string();
 //!
 //! let message = s + " world!";
@@ -40,7 +41,7 @@
 //! If you have a vector of valid UTF-8 bytes, you can make a `String` out of
 //! it. You can do the reverse too.
 //!
-//! ```rust
+//! ```
 //! let sparkle_heart = vec![240, 159, 146, 150];
 //!
 //! // We know these bytes are valid, so we'll use `unwrap()`.
@@ -57,16 +58,17 @@
 
 use core::fmt;
 use core::hash;
-use core::iter::FromIterator;
+use core::iter::{FromIterator, FusedIterator};
 use core::mem;
-use core::ops::{self, Add, Index, IndexMut};
+use core::ops::{self, Add, AddAssign, Index, IndexMut};
 use core::ptr;
 use core::str::pattern::Pattern;
-use rustc_unicode::char::{decode_utf16, REPLACEMENT_CHARACTER};
-use rustc_unicode::str as unicode_str;
+use std_unicode::char::{decode_utf16, REPLACEMENT_CHARACTER};
+use std_unicode::str as unicode_str;
 
 use borrow::{Cow, ToOwned};
 use range::RangeArgument;
+use Bound::{Excluded, Included, Unbounded};
 use str::{self, FromStr, Utf8Error, Chars};
 use vec::Vec;
 use boxed::Box;
@@ -132,12 +134,12 @@ use boxed::Box;
 /// [`OsString`]: ../../std/ffi/struct.OsString.html
 ///
 /// Indexing is intended to be a constant-time operation, but UTF-8 encoding
-/// does not allow us to do this. Furtheremore, it's not clear what sort of
+/// does not allow us to do this. Furthermore, it's not clear what sort of
 /// thing the index should return: a byte, a codepoint, or a grapheme cluster.
-/// The [`as_bytes()`] and [`chars()`] methods return iterators over the first
+/// The [`bytes()`] and [`chars()`] methods return iterators over the first
 /// two, respectively.
 ///
-/// [`as_bytes()`]: #method.as_bytes
+/// [`bytes()`]: #method.bytes
 /// [`chars()`]: #method.chars
 ///
 /// # Deref
@@ -184,7 +186,7 @@ use boxed::Box;
 /// let len = story.len();
 /// let capacity = story.capacity();
 ///
-/// // story has thirteen bytes
+/// // story has nineteen bytes
 /// assert_eq!(19, len);
 ///
 /// // Now that we have our parts, we throw the story away.
@@ -541,11 +543,7 @@ impl String {
             unsafe { *xs.get_unchecked(i) }
         }
         fn safe_get(xs: &[u8], i: usize, total: usize) -> u8 {
-            if i >= total {
-                0
-            } else {
-                unsafe_get(xs, i)
-            }
+            if i >= total { 0 } else { unsafe_get(xs, i) }
         }
 
         let mut res = String::with_capacity(total);
@@ -700,6 +698,12 @@ impl String {
     ///
     /// Violating these may cause problems like corrupting the allocator's
     /// internal datastructures.
+    ///
+    /// The ownership of `ptr` is effectively transferred to the
+    /// `String` which may then deallocate, reallocate or change the
+    /// contents of memory pointed to by the pointer at will. Ensure
+    /// that nothing else uses the pointer after calling this
+    /// function.
     ///
     /// # Examples
     ///
@@ -969,7 +973,7 @@ impl String {
     pub fn push(&mut self, ch: char) {
         match ch.len_utf8() {
             1 => self.vec.push(ch as u8),
-            _ => self.vec.extend_from_slice(ch.encode_utf8().as_slice()),
+            _ => self.vec.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes()),
         }
     }
 
@@ -1122,22 +1126,63 @@ impl String {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn insert(&mut self, idx: usize, ch: char) {
-        let len = self.len();
-        assert!(idx <= len);
         assert!(self.is_char_boundary(idx));
-        let bits = ch.encode_utf8();
-        let bits = bits.as_slice();
-        let amt = bits.len();
-        self.vec.reserve(amt);
+        let mut bits = [0; 4];
+        let bits = ch.encode_utf8(&mut bits).as_bytes();
 
         unsafe {
-            ptr::copy(self.vec.as_ptr().offset(idx as isize),
-                      self.vec.as_mut_ptr().offset((idx + amt) as isize),
-                      len - idx);
-            ptr::copy(bits.as_ptr(),
-                      self.vec.as_mut_ptr().offset(idx as isize),
-                      amt);
-            self.vec.set_len(len + amt);
+            self.insert_bytes(idx, bits);
+        }
+    }
+
+    unsafe fn insert_bytes(&mut self, idx: usize, bytes: &[u8]) {
+        let len = self.len();
+        let amt = bytes.len();
+        self.vec.reserve(amt);
+
+        ptr::copy(self.vec.as_ptr().offset(idx as isize),
+                  self.vec.as_mut_ptr().offset((idx + amt) as isize),
+                  len - idx);
+        ptr::copy(bytes.as_ptr(),
+                  self.vec.as_mut_ptr().offset(idx as isize),
+                  amt);
+        self.vec.set_len(len + amt);
+    }
+
+    /// Inserts a string slice into this `String` at a byte position.
+    ///
+    /// This is an `O(n)` operation as it requires copying every element in the
+    /// buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is larger than the `String`'s length, or if it does not
+    /// lie on a [`char`] boundary.
+    ///
+    /// [`char`]: ../../std/primitive.char.html
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(insert_str)]
+    ///
+    /// let mut s = String::from("bar");
+    ///
+    /// s.insert_str(0, "foo");
+    ///
+    /// assert_eq!("foobar", s);
+    /// ```
+    #[inline]
+    #[unstable(feature = "insert_str",
+               reason = "recent addition",
+               issue = "35553")]
+    pub fn insert_str(&mut self, idx: usize, string: &str) {
+        assert!(self.is_char_boundary(idx));
+
+        unsafe {
+            self.insert_bytes(idx, string.as_bytes());
         }
     }
 
@@ -1209,6 +1254,38 @@ impl String {
         self.len() == 0
     }
 
+    /// Divide one string into two at an index.
+    ///
+    /// The argument, `mid`, should be a byte offset from the start of the string. It must also
+    /// be on the boundary of a UTF-8 code point.
+    ///
+    /// The two strings returned go from the start of the string to `mid`, and from `mid` to the end
+    /// of the string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `mid` is not on a `UTF-8` code point boundary, or if it is beyond the last
+    /// code point of the string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #![feature(string_split_off)]
+    /// # fn main() {
+    /// let mut hello = String::from("Hello, World!");
+    /// let world = hello.split_off(7);
+    /// assert_eq!(hello, "Hello, ");
+    /// assert_eq!(world, "World!");
+    /// # }
+    /// ```
+    #[inline]
+    #[unstable(feature = "string_split_off", issue = "38080")]
+    pub fn split_off(&mut self, mid: usize) -> String {
+        assert!(self.is_char_boundary(mid));
+        let other = self.vec.split_off(mid);
+        unsafe { String::from_utf8_unchecked(other) }
+    }
+
     /// Truncates this `String`, removing all contents.
     ///
     /// While this means the `String` will have a length of zero, it does not
@@ -1274,8 +1351,16 @@ impl String {
         // Because the range removal happens in Drop, if the Drain iterator is leaked,
         // the removal will not happen.
         let len = self.len();
-        let start = *range.start().unwrap_or(&0);
-        let end = *range.end().unwrap_or(&len);
+        let start = match range.start() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => len,
+        };
 
         // Take out two simultaneous borrows. The &mut String won't be accessed
         // until iteration is over, in Drop.
@@ -1518,6 +1603,7 @@ impl_eq! { Cow<'a, str>, String }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Default for String {
+    /// Creates an empty `String`.
     #[inline]
     fn default() -> String {
         String::new()
@@ -1556,6 +1642,14 @@ impl<'a> Add<&'a str> for String {
     fn add(mut self, other: &str) -> String {
         self.push_str(other);
         self
+    }
+}
+
+#[stable(feature = "stringaddassign", since = "1.12.0")]
+impl<'a> AddAssign<&'a str> for String {
+    #[inline]
+    fn add_assign(&mut self, other: &str) {
+        self.push_str(other);
     }
 }
 
@@ -1800,6 +1894,13 @@ impl<'a> From<&'a str> for String {
     }
 }
 
+#[stable(feature = "string_from_cow_str", since = "1.14.0")]
+impl<'a> From<Cow<'a, str>> for String {
+    fn from(s: Cow<'a, str>) -> String {
+        s.into_owned()
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> From<&'a str> for Cow<'a, str> {
     #[inline]
@@ -1816,10 +1917,31 @@ impl<'a> From<String> for Cow<'a, str> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
-impl Into<Vec<u8>> for String {
-    fn into(self) -> Vec<u8> {
-        self.into_bytes()
+#[stable(feature = "cow_str_from_iter", since = "1.12.0")]
+impl<'a> FromIterator<char> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = char>>(it: I) -> Cow<'a, str> {
+        Cow::Owned(FromIterator::from_iter(it))
+    }
+}
+
+#[stable(feature = "cow_str_from_iter", since = "1.12.0")]
+impl<'a, 'b> FromIterator<&'b str> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = &'b str>>(it: I) -> Cow<'a, str> {
+        Cow::Owned(FromIterator::from_iter(it))
+    }
+}
+
+#[stable(feature = "cow_str_from_iter", since = "1.12.0")]
+impl<'a> FromIterator<String> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = String>>(it: I) -> Cow<'a, str> {
+        Cow::Owned(FromIterator::from_iter(it))
+    }
+}
+
+#[stable(feature = "from_string_for_vec_u8", since = "1.14.0")]
+impl From<String> for Vec<u8> {
+    fn from(string: String) -> Vec<u8> {
+        string.into_bytes()
     }
 }
 
@@ -1897,3 +2019,6 @@ impl<'a> DoubleEndedIterator for Drain<'a> {
         self.iter.next_back()
     }
 }
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a> FusedIterator for Drain<'a> {}

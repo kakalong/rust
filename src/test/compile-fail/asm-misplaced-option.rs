@@ -9,6 +9,10 @@
 // except according to those terms.
 
 // ignore-android
+// ignore-arm
+// ignore-aarch64
+// ignore-s390x
+// ignore-emscripten
 
 #![feature(asm, rustc_attrs)]
 

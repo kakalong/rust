@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
 use os::unix::prelude::*;
 
 use ffi::{CString, CStr, OsString, OsStr};
@@ -27,7 +26,7 @@ use sys_common::{AsInner, FromInner};
 #[cfg(any(target_os = "linux", target_os = "emscripten"))]
 use libc::{stat64, fstat64, lstat64, off64_t, ftruncate64, lseek64, dirent64, readdir64_r, open64};
 #[cfg(target_os = "android")]
-use libc::{stat as stat64, fstat as fstat64, lstat as lstat64, off64_t, ftruncate64, lseek64,
+use libc::{stat as stat64, fstat as fstat64, lstat as lstat64, lseek64,
            dirent as dirent64, open as open64};
 #[cfg(not(any(target_os = "linux",
               target_os = "emscripten",
@@ -67,7 +66,7 @@ pub struct DirEntry {
     name: Box<[u8]>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OpenOptions {
     // generic
     read: bool,
@@ -84,9 +83,10 @@ pub struct OpenOptions {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FilePermissions { mode: mode_t }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FileType { mode: mode_t }
 
+#[derive(Debug)]
 pub struct DirBuilder { mode: mode_t }
 
 impl FileAttr {
@@ -97,31 +97,6 @@ impl FileAttr {
 
     pub fn file_type(&self) -> FileType {
         FileType { mode: self.stat.st_mode as mode_t }
-    }
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-// FIXME: update SystemTime to store a timespec and don't lose precision
-impl FileAttr {
-    pub fn modified(&self) -> io::Result<SystemTime> {
-        Ok(SystemTime::from(libc::timeval {
-            tv_sec: self.stat.st_mtime,
-            tv_usec: (self.stat.st_mtime_nsec / 1000) as libc::suseconds_t,
-        }))
-    }
-
-    pub fn accessed(&self) -> io::Result<SystemTime> {
-        Ok(SystemTime::from(libc::timeval {
-            tv_sec: self.stat.st_atime,
-            tv_usec: (self.stat.st_atime_nsec / 1000) as libc::suseconds_t,
-        }))
-    }
-
-    pub fn created(&self) -> io::Result<SystemTime> {
-        Ok(SystemTime::from(libc::timeval {
-            tv_sec: self.stat.st_birthtime,
-            tv_usec: (self.stat.st_birthtime_nsec / 1000) as libc::suseconds_t,
-        }))
     }
 }
 
@@ -149,7 +124,7 @@ impl FileAttr {
     }
 }
 
-#[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "netbsd")))]
+#[cfg(not(target_os = "netbsd"))]
 impl FileAttr {
     pub fn modified(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
@@ -167,7 +142,9 @@ impl FileAttr {
 
     #[cfg(any(target_os = "bitrig",
               target_os = "freebsd",
-              target_os = "openbsd"))]
+              target_os = "openbsd",
+              target_os = "macos",
+              target_os = "ios"))]
     pub fn created(&self) -> io::Result<SystemTime> {
         Ok(SystemTime::from(libc::timespec {
             tv_sec: self.stat.st_birthtime as libc::time_t,
@@ -177,7 +154,9 @@ impl FileAttr {
 
     #[cfg(not(any(target_os = "bitrig",
                   target_os = "freebsd",
-                  target_os = "openbsd")))]
+                  target_os = "openbsd",
+                  target_os = "macos",
+                  target_os = "ios")))]
     pub fn created(&self) -> io::Result<SystemTime> {
         Err(io::Error::new(io::ErrorKind::Other,
                            "creation time is not available on this platform \
@@ -215,6 +194,14 @@ impl FromInner<u32> for FilePermissions {
     }
 }
 
+impl fmt::Debug for ReadDir {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // This will only be called from std::fs::ReadDir, which will add a "ReadDir()" frame.
+        // Thus the result will be e g 'ReadDir("/home")'
+        fmt::Debug::fmt(&*self.root, f)
+    }
+}
+
 impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
@@ -226,9 +213,15 @@ impl Iterator for ReadDir {
                 // of the thread safety, on Illumos the readdir(3C) function is safe to use
                 // in threaded applications and it is generally preferred over the
                 // readdir_r(3C) function.
+                super::os::set_errno(0);
                 let entry_ptr = libc::readdir(self.dirp.0);
                 if entry_ptr.is_null() {
-                    return None
+                    // NULL can mean either the end is reached or an error occurred.
+                    // So we had to clear errno beforehand to check for an error now.
+                    return match super::os::errno() {
+                        0 => None,
+                        e => Some(Err(Error::from_raw_os_error(e))),
+                    }
                 }
 
                 let name = (*entry_ptr).d_name.as_ptr();
@@ -295,7 +288,12 @@ impl DirEntry {
         stat(&self.path()).map(|m| m.file_type())
     }
 
-    #[cfg(not(target_os = "solaris"))]
+    #[cfg(target_os = "haiku")]
+    pub fn file_type(&self) -> io::Result<FileType> {
+        lstat(&self.path()).map(|m| m.file_type())
+    }
+
+    #[cfg(not(any(target_os = "solaris", target_os = "haiku")))]
     pub fn file_type(&self) -> io::Result<FileType> {
         match self.entry.d_type {
             libc::DT_CHR => Ok(FileType { mode: libc::S_IFCHR }),
@@ -314,7 +312,9 @@ impl DirEntry {
               target_os = "linux",
               target_os = "emscripten",
               target_os = "android",
-              target_os = "solaris"))]
+              target_os = "solaris",
+              target_os = "haiku",
+              target_os = "fuchsia"))]
     pub fn ino(&self) -> u64 {
         self.entry.d_ino as u64
     }
@@ -343,7 +343,9 @@ impl DirEntry {
     }
     #[cfg(any(target_os = "android",
               target_os = "linux",
-              target_os = "emscripten"))]
+              target_os = "emscripten",
+              target_os = "haiku",
+              target_os = "fuchsia"))]
     fn name_bytes(&self) -> &[u8] {
         unsafe {
             CStr::from_ptr(self.entry.d_name.as_ptr()).to_bytes()
@@ -439,7 +441,7 @@ impl File {
         // The CLOEXEC flag, however, is supported on versions of OSX/BSD/etc
         // that we support, so we only do this on Linux currently.
         if cfg!(target_os = "linux") {
-            fd.set_cloexec();
+            fd.set_cloexec()?;
         }
 
         Ok(File(fd))
@@ -475,10 +477,13 @@ impl File {
     }
 
     pub fn truncate(&self, size: u64) -> io::Result<()> {
-        cvt_r(|| unsafe {
+        #[cfg(target_os = "android")]
+        return ::sys::android::ftruncate64(self.0.raw(), size);
+
+        #[cfg(not(target_os = "android"))]
+        return cvt_r(|| unsafe {
             ftruncate64(self.0.raw(), size as off64_t)
-        })?;
-        Ok(())
+        }).map(|_| ());
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -489,17 +494,27 @@ impl File {
         self.0.read_to_end(buf)
     }
 
+    pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        self.0.read_at(buf, offset)
+    }
+
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
+    }
+
+    pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
+        self.0.write_at(buf, offset)
     }
 
     pub fn flush(&self) -> io::Result<()> { Ok(()) }
 
     pub fn seek(&self, pos: SeekFrom) -> io::Result<u64> {
         let (whence, pos) = match pos {
-            SeekFrom::Start(off) => (libc::SEEK_SET, off as off64_t),
-            SeekFrom::End(off) => (libc::SEEK_END, off as off64_t),
-            SeekFrom::Current(off) => (libc::SEEK_CUR, off as off64_t),
+            // Casting to `i64` is fine, too large values will end up as
+            // negative which will cause an error in `lseek64`.
+            SeekFrom::Start(off) => (libc::SEEK_SET, off as i64),
+            SeekFrom::End(off) => (libc::SEEK_END, off),
+            SeekFrom::Current(off) => (libc::SEEK_CUR, off),
         };
         let n = cvt(unsafe { lseek64(self.0.raw(), pos, whence) })?;
         Ok(n as u64)
@@ -512,6 +527,11 @@ impl File {
     pub fn fd(&self) -> &FileDesc { &self.0 }
 
     pub fn into_fd(self) -> FileDesc { self.0 }
+
+    pub fn set_permissions(&self, perm: FilePermissions) -> io::Result<()> {
+        cvt_r(|| unsafe { libc::fchmod(self.0.raw(), perm.mode) })?;
+        Ok(())
+    }
 }
 
 impl DirBuilder {
@@ -544,7 +564,6 @@ impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         #[cfg(target_os = "linux")]
         fn get_path(fd: c_int) -> Option<PathBuf> {
-            use string::ToString;
             let mut p = PathBuf::from("/proc/self/fd");
             p.push(&fd.to_string());
             readlink(&p).ok()
@@ -674,7 +693,7 @@ pub fn readlink(p: &Path) -> io::Result<PathBuf> {
 
     loop {
         let buf_read = cvt(unsafe {
-            libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity() as libc::size_t)
+            libc::readlink(p, buf.as_mut_ptr() as *mut _, buf.capacity())
         })? as usize;
 
         unsafe { buf.set_len(buf_read); }

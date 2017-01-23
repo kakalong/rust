@@ -19,14 +19,17 @@
 //!   interested in defining the ValueRef they return.
 //! * Use define_* family of methods when you might be defining the ValueRef.
 //! * When in doubt, define.
+
 use llvm::{self, ValueRef};
+use llvm::AttributePlace::Function;
 use rustc::ty;
-use rustc::infer;
 use abi::{Abi, FnType};
 use attributes;
 use context::CrateContext;
+use common;
 use type_::Type;
 use value::Value;
+use syntax::attr;
 
 use std::ffi::CString;
 
@@ -41,7 +44,7 @@ pub fn declare_global(ccx: &CrateContext, name: &str, ty: Type) -> llvm::ValueRe
         bug!("name {:?} contains an interior null byte", name)
     });
     unsafe {
-        llvm::LLVMGetOrInsertGlobal(ccx.llmod(), namebuf.as_ptr(), ty.to_ref())
+        llvm::LLVMRustGetOrInsertGlobal(ccx.llmod(), namebuf.as_ptr(), ty.to_ref())
     }
 }
 
@@ -56,7 +59,7 @@ fn declare_raw_fn(ccx: &CrateContext, name: &str, callconv: llvm::CallConv, ty: 
         bug!("name {:?} contains an interior null byte", name)
     });
     let llfn = unsafe {
-        llvm::LLVMGetOrInsertFunction(ccx.llmod(), namebuf.as_ptr(), ty.to_ref())
+        llvm::LLVMRustGetOrInsertFunction(ccx.llmod(), namebuf.as_ptr(), ty.to_ref())
     };
 
     llvm::SetFunctionCallConv(llfn, callconv);
@@ -66,7 +69,28 @@ fn declare_raw_fn(ccx: &CrateContext, name: &str, callconv: llvm::CallConv, ty: 
 
     if ccx.tcx().sess.opts.cg.no_redzone
         .unwrap_or(ccx.tcx().sess.target.target.options.disable_redzone) {
-        llvm::SetFunctionAttribute(llfn, llvm::Attribute::NoRedZone)
+        llvm::Attribute::NoRedZone.apply_llfn(Function, llfn);
+    }
+
+    // If we're compiling the compiler-builtins crate, e.g. the equivalent of
+    // compiler-rt, then we want to implicitly compile everything with hidden
+    // visibility as we're going to link this object all over the place but
+    // don't want the symbols to get exported.
+    if attr::contains_name(ccx.tcx().map.krate_attrs(), "compiler_builtins") {
+        unsafe {
+            llvm::LLVMRustSetVisibility(llfn, llvm::Visibility::Hidden);
+        }
+    }
+
+    match ccx.tcx().sess.opts.cg.opt_level.as_ref().map(String::as_ref) {
+        Some("s") => {
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+        },
+        Some("z") => {
+            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+        },
+        _ => {},
     }
 
     llfn
@@ -92,16 +116,16 @@ pub fn declare_cfn(ccx: &CrateContext, name: &str, fn_type: Type) -> ValueRef {
 pub fn declare_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, name: &str,
                             fn_type: ty::Ty<'tcx>) -> ValueRef {
     debug!("declare_rust_fn(name={:?}, fn_type={:?})", name, fn_type);
-    let abi = fn_type.fn_abi();
-    let sig = ccx.tcx().erase_late_bound_regions(fn_type.fn_sig());
-    let sig = infer::normalize_associated_type(ccx.tcx(), &sig);
+    let ty::BareFnTy { abi, ref sig, .. } = *common::ty_fn_ty(ccx, fn_type);
+    let sig = ccx.tcx().erase_late_bound_regions_and_normalize(sig);
     debug!("declare_rust_fn (after region erasure) sig={:?}", sig);
 
     let fty = FnType::new(ccx, abi, &sig, &[]);
     let llfn = declare_raw_fn(ccx, name, fty.cconv, fty.llvm_type(ccx));
 
-    if sig.output == ty::FnDiverging {
-        llvm::SetFunctionAttribute(llfn, llvm::Attribute::NoReturn);
+    // FIXME(canndrew): This is_never should really be an is_uninhabited
+    if sig.output().is_never() {
+        llvm::Attribute::NoReturn.apply_llfn(Function, llfn);
     }
 
     if abi != Abi::Rust && abi != Abi::RustCall {
@@ -128,6 +152,20 @@ pub fn define_global(ccx: &CrateContext, name: &str, ty: Type) -> Option<ValueRe
     }
 }
 
+/// Declare a Rust function with an intention to define it.
+///
+/// Use this function when you intend to define a function. This function will
+/// return panic if the name already has a definition associated with it. This
+/// can happen with #[no_mangle] or #[export_name], for example.
+pub fn define_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                           name: &str,
+                           fn_type: ty::Ty<'tcx>) -> ValueRef {
+    if get_defined_value(ccx, name).is_some() {
+        ccx.sess().fatal(&format!("symbol `{}` already defined", name))
+    } else {
+        declare_fn(ccx, name, fn_type)
+    }
+}
 
 /// Declare a Rust function with an intention to define it.
 ///
@@ -137,13 +175,9 @@ pub fn define_global(ccx: &CrateContext, name: &str, ty: Type) -> Option<ValueRe
 pub fn define_internal_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                     name: &str,
                                     fn_type: ty::Ty<'tcx>) -> ValueRef {
-    if get_defined_value(ccx, name).is_some() {
-        ccx.sess().fatal(&format!("symbol `{}` already defined", name))
-    } else {
-        let llfn = declare_fn(ccx, name, fn_type);
-        llvm::SetLinkage(llfn, llvm::InternalLinkage);
-        llfn
-    }
+    let llfn = define_fn(ccx, name, fn_type);
+    unsafe { llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::InternalLinkage) };
+    llfn
 }
 
 
@@ -153,7 +187,7 @@ pub fn get_declared_value(ccx: &CrateContext, name: &str) -> Option<ValueRef> {
     let namebuf = CString::new(name).unwrap_or_else(|_|{
         bug!("name {:?} contains an interior null byte", name)
     });
-    let val = unsafe { llvm::LLVMGetNamedValue(ccx.llmod(), namebuf.as_ptr()) };
+    let val = unsafe { llvm::LLVMRustGetNamedValue(ccx.llmod(), namebuf.as_ptr()) };
     if val.is_null() {
         debug!("get_declared_value: {:?} value is null", name);
         None

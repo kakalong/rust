@@ -11,7 +11,7 @@
 use hir::def_id::{DefId};
 use ty::{self, Ty, TyCtxt};
 use util::common::MemoizationMap;
-use util::nodemap::FnvHashMap;
+use util::nodemap::FxHashMap;
 
 use std::fmt;
 use std::ops;
@@ -89,7 +89,7 @@ impl TypeContents {
         self.intersects(TC::InteriorUnsafe)
     }
 
-    pub fn needs_drop(&self, _: &TyCtxt) -> bool {
+    pub fn needs_drop(&self, _: TyCtxt) -> bool {
         self.intersects(TC::NeedsDrop)
     }
 
@@ -98,10 +98,11 @@ impl TypeContents {
         TC::OwnsOwned | (*self & TC::OwnsAll)
     }
 
-    pub fn union<T, F>(v: &[T], mut f: F) -> TypeContents where
-        F: FnMut(&T) -> TypeContents,
+    pub fn union<I, T, F>(v: I, mut f: F) -> TypeContents where
+        I: IntoIterator<Item=T>,
+        F: FnMut(T) -> TypeContents,
     {
-        v.iter().fold(TC::None, |tc, ty| tc | f(ty))
+        v.into_iter().fold(TC::None, |tc, ty| tc | f(ty))
     }
 
     pub fn has_dtor(&self) -> bool {
@@ -139,15 +140,15 @@ impl fmt::Debug for TypeContents {
     }
 }
 
-impl<'tcx> ty::TyS<'tcx> {
-    pub fn type_contents(&'tcx self, cx: &TyCtxt<'tcx>) -> TypeContents {
-        return cx.tc_cache.memoize(self, || tc_ty(cx, self, &mut FnvHashMap()));
+impl<'a, 'tcx> ty::TyS<'tcx> {
+    pub fn type_contents(&'tcx self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> TypeContents {
+        return tcx.tc_cache.memoize(self, || tc_ty(tcx, self, &mut FxHashMap()));
 
-        fn tc_ty<'tcx>(cx: &TyCtxt<'tcx>,
-                       ty: Ty<'tcx>,
-                       cache: &mut FnvHashMap<Ty<'tcx>, TypeContents>) -> TypeContents
+        fn tc_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                           ty: Ty<'tcx>,
+                           cache: &mut FxHashMap<Ty<'tcx>, TypeContents>) -> TypeContents
         {
-            // Subtle: Note that we are *not* using cx.tc_cache here but rather a
+            // Subtle: Note that we are *not* using tcx.tc_cache here but rather a
             // private cache for this walk.  This is needed in the case of cyclic
             // types like:
             //
@@ -163,18 +164,17 @@ impl<'tcx> ty::TyS<'tcx> {
             // The problem is, as we are doing the computation, we will also
             // compute an *intermediate* contents for, e.g., Option<List> of
             // TC::None.  This is ok during the computation of List itself, but if
-            // we stored this intermediate value into cx.tc_cache, then later
+            // we stored this intermediate value into tcx.tc_cache, then later
             // requests for the contents of Option<List> would also yield TC::None
             // which is incorrect.  This value was computed based on the crutch
             // value for the type contents of list.  The correct value is
             // TC::OwnsOwned.  This manifested as issue #4821.
-            match cache.get(&ty) {
-                Some(tc) => { return *tc; }
-                None => {}
+            if let Some(tc) = cache.get(&ty) {
+                return *tc;
             }
-            match cx.tc_cache.borrow().get(&ty) {    // Must check both caches!
-                Some(tc) => { return *tc; }
-                None => {}
+            // Must check both caches!
+            if let Some(tc) = tcx.tc_cache.borrow().get(&ty) {
+                return *tc;
             }
             cache.insert(ty, TC::None);
 
@@ -186,16 +186,16 @@ impl<'tcx> ty::TyS<'tcx> {
 
                 // Scalar and unique types are sendable, and durable
                 ty::TyInfer(ty::FreshIntTy(_)) | ty::TyInfer(ty::FreshFloatTy(_)) |
-                ty::TyBool | ty::TyInt(_) | ty::TyUint(_) | ty::TyFloat(_) |
+                ty::TyBool | ty::TyInt(_) | ty::TyUint(_) | ty::TyFloat(_) | ty::TyNever |
                 ty::TyFnDef(..) | ty::TyFnPtr(_) | ty::TyChar => {
                     TC::None
                 }
 
                 ty::TyBox(typ) => {
-                    tc_ty(cx, typ, cache).owned_pointer()
+                    tc_ty(tcx, typ, cache).owned_pointer()
                 }
 
-                ty::TyTrait(_) => {
+                ty::TyDynamic(..) => {
                     TC::All - TC::InteriorParam
                 }
 
@@ -203,45 +203,53 @@ impl<'tcx> ty::TyS<'tcx> {
                     TC::None
                 }
 
-                ty::TyRef(_, _) => {
+                ty::TyRef(..) => {
                     TC::None
                 }
 
                 ty::TyArray(ty, _) => {
-                    tc_ty(cx, ty, cache)
+                    tc_ty(tcx, ty, cache)
                 }
 
                 ty::TySlice(ty) => {
-                    tc_ty(cx, ty, cache)
+                    tc_ty(tcx, ty, cache)
                 }
                 ty::TyStr => TC::None,
 
-                ty::TyClosure(_, ref substs) => {
-                    TypeContents::union(&substs.upvar_tys, |ty| tc_ty(cx, &ty, cache))
+                ty::TyClosure(def_id, ref substs) => {
+                    TypeContents::union(
+                        substs.upvar_tys(def_id, tcx),
+                        |ty| tc_ty(tcx, &ty, cache))
                 }
 
                 ty::TyTuple(ref tys) => {
                     TypeContents::union(&tys[..],
-                                        |ty| tc_ty(cx, *ty, cache))
+                                        |ty| tc_ty(tcx, *ty, cache))
                 }
 
-                ty::TyStruct(def, substs) | ty::TyEnum(def, substs) => {
+                ty::TyAdt(def, substs) => {
                     let mut res =
                         TypeContents::union(&def.variants, |v| {
                             TypeContents::union(&v.fields, |f| {
-                                tc_ty(cx, f.ty(cx, substs), cache)
+                                tc_ty(tcx, f.ty(tcx, substs), cache)
                             })
                         });
+
+                    if def.is_union() {
+                        // unions don't have destructors regardless of the child types
+                        res = res - TC::NeedsDrop;
+                    }
 
                     if def.has_dtor() {
                         res = res | TC::OwnsDtor;
                     }
 
-                    apply_lang_items(cx, def.did, res)
+                    apply_lang_items(tcx, def.did, res)
                 }
 
                 ty::TyProjection(..) |
-                ty::TyParam(_) => {
+                ty::TyParam(_) |
+                ty::TyAnon(..) => {
                     TC::All
                 }
 
@@ -255,9 +263,10 @@ impl<'tcx> ty::TyS<'tcx> {
             result
         }
 
-        fn apply_lang_items(cx: &TyCtxt, did: DefId, tc: TypeContents)
-                            -> TypeContents {
-            if Some(did) == cx.lang_items.unsafe_cell_type() {
+        fn apply_lang_items<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                                      did: DefId, tc: TypeContents)
+                                      -> TypeContents {
+            if Some(did) == tcx.lang_items.unsafe_cell_type() {
                 tc | TC::InteriorUnsafe
             } else {
                 tc

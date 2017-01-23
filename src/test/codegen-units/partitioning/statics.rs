@@ -9,7 +9,9 @@
 // except according to those terms.
 
 // ignore-tidy-linelength
-// compile-flags:-Zprint-trans-items=lazy
+// We specify -Z incremental here because we want to test the partitioning for
+// incremental compilation
+// compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/statics
 
 #![crate_type="lib"]
 
@@ -19,7 +21,7 @@ static FOO: u32 = 0;
 //~ TRANS_ITEM static statics::BAR[0] @@ statics[External]
 static BAR: u32 = 0;
 
-//~ TRANS_ITEM fn statics::function[0] @@ statics[WeakODR]
+//~ TRANS_ITEM fn statics::function[0] @@ statics[External]
 fn function() {
     //~ TRANS_ITEM static statics::function[0]::FOO[0] @@ statics[External]
     static FOO: u32 = 0;
@@ -35,7 +37,7 @@ mod mod1 {
     //~ TRANS_ITEM static statics::mod1[0]::BAR[0] @@ statics-mod1[External]
     static BAR: u32 = 0;
 
-    //~ TRANS_ITEM fn statics::mod1[0]::function[0] @@ statics-mod1[WeakODR]
+    //~ TRANS_ITEM fn statics::mod1[0]::function[0] @@ statics-mod1[External]
     fn function() {
         //~ TRANS_ITEM static statics::mod1[0]::function[0]::FOO[0] @@ statics-mod1[External]
         static FOO: u32 = 0;

@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::{Target, TargetOptions};
+use target::{Target, TargetOptions, TargetResult};
 use super::apple_ios_base::{opts, Arch};
 
-pub fn target() -> Target {
-    Target {
+pub fn target() -> TargetResult {
+    let base = opts(Arch::Arm64)?;
+    Ok(Target {
         llvm_target: "arm64-apple-ios".to_string(),
         target_endian: "little".to_string(),
         target_pointer_width: "64".to_string(),
@@ -24,7 +25,9 @@ pub fn target() -> Target {
         options: TargetOptions {
             features: "+neon,+fp-armv8,+cyclone".to_string(),
             eliminate_frame_pointer: false,
-            .. opts(Arch::Arm64)
+            max_atomic_width: Some(128),
+            abi_blacklist: super::arm_base::abi_blacklist(),
+            .. base
         },
-    }
+    })
 }

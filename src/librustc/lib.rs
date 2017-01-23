@@ -21,48 +21,45 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(associated_consts)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(collections)]
+#![feature(conservative_impl_trait)]
 #![feature(const_fn)]
-#![feature(enumset)]
-#![feature(iter_arith)]
+#![feature(core_intrinsics)]
 #![feature(libc)]
 #![feature(nonzero)]
+#![feature(pub_restricted)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(slice_patterns)]
 #![feature(staged_api)]
-#![feature(step_by)]
-#![feature(question_mark)]
-#![cfg_attr(test, feature(test))]
+#![feature(unboxed_closures)]
 
 extern crate arena;
 extern crate core;
-extern crate flate;
 extern crate fmt_macros;
 extern crate getopts;
 extern crate graphviz;
 extern crate libc;
-extern crate rbml;
 extern crate rustc_llvm as llvm;
 extern crate rustc_back;
 extern crate rustc_data_structures;
 extern crate serialize;
-extern crate collections;
 extern crate rustc_const_math;
+extern crate rustc_errors as errors;
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
+extern crate syntax_pos;
 #[macro_use] #[no_link] extern crate rustc_bitflags;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
-#[cfg(test)]
-extern crate test;
+// SNAP:
+extern crate rustc_i128;
 
 #[macro_use]
 mod macros;
@@ -79,9 +76,8 @@ pub mod lint;
 
 pub mod middle {
     pub mod astconv_util;
-    pub mod expr_use_visitor; // STAGE0: increase glitch immunity
+    pub mod expr_use_visitor;
     pub mod const_val;
-    pub mod const_qualif;
     pub mod cstore;
     pub mod dataflow;
     pub mod dead;
@@ -102,21 +98,12 @@ pub mod middle {
     pub mod weak_lang_items;
 }
 
-pub mod mir {
-    pub mod repr;
-    pub mod tcx;
-    pub mod visit;
-    pub mod transform;
-    pub mod mir_map;
-}
-
+pub mod mir;
 pub mod session;
 pub mod traits;
 pub mod ty;
 
 pub mod util {
-    pub use rustc_back::sha2;
-
     pub mod common;
     pub mod ppaux;
     pub mod nodemap;

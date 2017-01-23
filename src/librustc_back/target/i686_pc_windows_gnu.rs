@@ -8,17 +8,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::Target;
+use target::{Target, TargetResult};
 
-pub fn target() -> Target {
+pub fn target() -> TargetResult {
     let mut base = super::windows_base::opts();
     base.cpu = "pentium4".to_string();
+    base.max_atomic_width = Some(64);
 
     // Mark all dynamic libraries and executables as compatible with the larger 4GiB address
     // space available to x86 Windows binaries on x86_64.
     base.pre_link_args.push("-Wl,--large-address-aware".to_string());
 
-    Target {
+    Ok(Target {
         llvm_target: "i686-pc-windows-gnu".to_string(),
         target_endian: "little".to_string(),
         target_pointer_width: "32".to_string(),
@@ -28,5 +29,5 @@ pub fn target() -> Target {
         target_env: "gnu".to_string(),
         target_vendor: "pc".to_string(),
         options: base,
-    }
+    })
 }

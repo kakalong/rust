@@ -12,13 +12,12 @@
 
 use io::{self, ErrorKind};
 use libc;
-use num::One;
-use ops::Neg;
 
 #[cfg(target_os = "android")]   pub use os::android as platform;
 #[cfg(target_os = "bitrig")]    pub use os::bitrig as platform;
 #[cfg(target_os = "dragonfly")] pub use os::dragonfly as platform;
 #[cfg(target_os = "freebsd")]   pub use os::freebsd as platform;
+#[cfg(target_os = "haiku")]     pub use os::haiku as platform;
 #[cfg(target_os = "ios")]       pub use os::ios as platform;
 #[cfg(target_os = "linux")]     pub use os::linux as platform;
 #[cfg(target_os = "macos")]     pub use os::macos as platform;
@@ -27,19 +26,27 @@ use ops::Neg;
 #[cfg(target_os = "openbsd")]   pub use os::openbsd as platform;
 #[cfg(target_os = "solaris")]   pub use os::solaris as platform;
 #[cfg(target_os = "emscripten")] pub use os::emscripten as platform;
+#[cfg(target_os = "fuchsia")]   pub use os::fuchsia as platform;
 
 #[macro_use]
 pub mod weak;
 
+pub mod args;
+pub mod android;
+#[cfg(any(not(cargobuild), feature = "backtrace"))]
 pub mod backtrace;
 pub mod condvar;
+pub mod env;
 pub mod ext;
+pub mod fast_thread_local;
 pub mod fd;
 pub mod fs;
+pub mod memchr;
 pub mod mutex;
 pub mod net;
 pub mod os;
 pub mod os_str;
+pub mod path;
 pub mod pipe;
 pub mod process;
 pub mod rand;
@@ -78,50 +85,21 @@ pub fn init() {
         unsafe {
             libc::write(libc::STDERR_FILENO,
                         msg.as_ptr() as *const libc::c_void,
-                        msg.len() as libc::size_t);
+                        msg.len());
             intrinsics::abort();
         }
     }
 
-    #[cfg(not(target_os = "nacl"))]
+    #[cfg(not(any(target_os = "nacl", target_os = "emscripten", target_os="fuchsia")))]
     unsafe fn reset_sigpipe() {
         assert!(signal(libc::SIGPIPE, libc::SIG_IGN) != !0);
     }
-    #[cfg(target_os = "nacl")]
+    #[cfg(any(target_os = "nacl", target_os = "emscripten", target_os="fuchsia"))]
     unsafe fn reset_sigpipe() {}
 }
 
-// Currently the minimum supported Android version of the standard library is
-// API level 18 (android-18). Back in those days [1] the `signal` function was
-// just an inline wrapper around `bsd_signal`, but starting in API level
-// android-20 the `signal` symbols was introduced [2]. Finally, in android-21
-// the API `bsd_signal` was removed [3].
-//
-// Basically this means that if we want to be binary compatible with multiple
-// Android releases (oldest being 18 and newest being 21) then we need to check
-// for both symbols and not actually link against either.
-//
-// Note that if we're not on android we just link against the `android` symbol
-// itself.
-//
-// [1]: https://chromium.googlesource.com/android_tools/+/20ee6d20/ndk/platforms
-//                                       /android-18/arch-arm/usr/include/signal.h
-// [2]: https://chromium.googlesource.com/android_tools/+/fbd420/ndk_experimental
-//                                       /platforms/android-20/arch-arm
-//                                       /usr/include/signal.h
-// [3]: https://chromium.googlesource.com/android_tools/+/20ee6d/ndk/platforms
-//                                       /android-21/arch-arm/usr/include/signal.h
 #[cfg(target_os = "android")]
-unsafe fn signal(signum: libc::c_int,
-                 handler: libc::sighandler_t) -> libc::sighandler_t {
-    weak!(fn signal(libc::c_int, libc::sighandler_t) -> libc::sighandler_t);
-    weak!(fn bsd_signal(libc::c_int, libc::sighandler_t) -> libc::sighandler_t);
-
-    let f = signal.get().or_else(|| bsd_signal.get());
-    let f = f.expect("neither `signal` nor `bsd_signal` symbols found");
-    f(signum, handler)
-}
-
+pub use sys::android::signal;
 #[cfg(not(target_os = "android"))]
 pub use libc::signal;
 
@@ -151,9 +129,23 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
     }
 }
 
-pub fn cvt<T: One + PartialEq + Neg<Output=T>>(t: T) -> io::Result<T> {
-    let one: T = T::one();
-    if t == -one {
+#[doc(hidden)]
+pub trait IsMinusOne {
+    fn is_minus_one(&self) -> bool;
+}
+
+macro_rules! impl_is_minus_one {
+    ($($t:ident)*) => ($(impl IsMinusOne for $t {
+        fn is_minus_one(&self) -> bool {
+            *self == -1
+        }
+    })*)
+}
+
+impl_is_minus_one! { i8 i16 i32 i64 isize }
+
+pub fn cvt<T: IsMinusOne>(t: T) -> io::Result<T> {
+    if t.is_minus_one() {
         Err(io::Error::last_os_error())
     } else {
         Ok(t)
@@ -161,7 +153,8 @@ pub fn cvt<T: One + PartialEq + Neg<Output=T>>(t: T) -> io::Result<T> {
 }
 
 pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
-    where T: One + PartialEq + Neg<Output=T>, F: FnMut() -> T
+    where T: IsMinusOne,
+          F: FnMut() -> T
 {
     loop {
         match cvt(f()) {
@@ -169,4 +162,15 @@ pub fn cvt_r<T, F>(mut f: F) -> io::Result<T>
             other => return other,
         }
     }
+}
+
+// On Unix-like platforms, libc::abort will unregister signal handlers
+// including the SIGABRT handler, preventing the abort from being blocked, and
+// fclose streams, with the side effect of flushing them so libc bufferred
+// output will be printed.  Additionally the shell will generally print a more
+// understandable error message like "Abort trap" rather than "Illegal
+// instruction" that intrinsics::abort would cause, as intrinsics::abort is
+// implemented as an illegal instruction.
+pub unsafe fn abort_internal() -> ! {
+    ::libc::abort()
 }

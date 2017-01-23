@@ -17,8 +17,6 @@
             reason = "API not fully fleshed out and ready to be stabilized",
             issue = "27721")]
 
-use prelude::v1::*;
-
 use cmp;
 use fmt;
 use usize;
@@ -310,9 +308,9 @@ unsafe impl<'a, C: CharEq> Searcher<'a> for CharEqSearcher<'a, C> {
         let s = &mut self.char_indices;
         // Compare lengths of the internal byte slice iterator
         // to find length of current char
-        let (pre_len, _) = s.iter.iter.size_hint();
+        let pre_len = s.iter.iter.len();
         if let Some((i, c)) = s.next() {
-            let (len, _) = s.iter.iter.size_hint();
+            let len = s.iter.iter.len();
             let char_len = pre_len - len;
             if self.char_eq.matches(c) {
                 return SearchStep::Match(i, i + char_len);
@@ -330,9 +328,9 @@ unsafe impl<'a, C: CharEq> ReverseSearcher<'a> for CharEqSearcher<'a, C> {
         let s = &mut self.char_indices;
         // Compare lengths of the internal byte slice iterator
         // to find length of current char
-        let (pre_len, _) = s.iter.iter.size_hint();
+        let pre_len = s.iter.iter.len();
         if let Some((i, c)) = s.next_back() {
-            let (len, _) = s.iter.iter.size_hint();
+            let len = s.iter.iter.len();
             let char_len = pre_len - len;
             if self.char_eq.matches(c) {
                 return SearchStep::Match(i, i + char_len);

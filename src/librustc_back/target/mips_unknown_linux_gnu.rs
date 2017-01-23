@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::{Target, TargetOptions};
+use target::{Target, TargetOptions, TargetResult};
 
-pub fn target() -> Target {
-    Target {
+pub fn target() -> TargetResult {
+    Ok(Target {
         llvm_target: "mips-unknown-linux-gnu".to_string(),
         target_endian: "big".to_string(),
         target_pointer_width: "32".to_string(),
@@ -22,8 +22,13 @@ pub fn target() -> Target {
         target_vendor: "unknown".to_string(),
         options: TargetOptions {
             cpu: "mips32r2".to_string(),
-            features: "+mips32r2,+soft-float".to_string(),
+            features: "+mips32r2".to_string(),
+            max_atomic_width: Some(32),
+
+            // see #36994
+            exe_allocation_crate: "alloc_system".to_string(),
+
             ..super::linux_base::opts()
         },
-    }
+    })
 }

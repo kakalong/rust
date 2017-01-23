@@ -20,7 +20,10 @@ use std::fs::File;
 use std::path::Path;
 
 pub fn check(path: &Path, bad: &mut bool) {
-    for entry in t!(path.read_dir()).map(|e| t!(e)) {
+    if path.ends_with("vendor") {
+        return
+    }
+    for entry in t!(path.read_dir(), path).map(|e| t!(e)) {
         // Look for `Cargo.toml` with a sibling `src/lib.rs` or `lib.rs`
         if entry.file_name().to_str() == Some("Cargo.toml") {
             if path.join("src/lib.rs").is_file() {
@@ -81,8 +84,18 @@ fn verify(tomlfile: &Path, libfile: &Path, bad: &mut bool) {
         }
 
         // This is intentional, this dependency just makes the crate available
-        // for others later on.
-        if krate == "alloc_jemalloc" && toml.contains("name = \"std\"") {
+        // for others later on. Cover cases
+        let whitelisted = krate == "alloc_jemalloc";
+        let whitelisted = whitelisted || krate.starts_with("panic");
+        if toml.contains("name = \"std\"") && whitelisted {
+            continue
+        }
+
+        // We want the compiler to depend on the proc_macro_plugin crate so
+        // that it is built and included in the end, but we don't want to
+        // actually use it in the compiler.
+        if toml.contains("name = \"rustc_driver\"") &&
+           krate == "proc_macro_plugin" {
             continue
         }
 

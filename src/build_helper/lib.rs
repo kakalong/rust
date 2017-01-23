@@ -21,11 +21,14 @@ pub fn run(cmd: &mut Command) {
 pub fn run_silent(cmd: &mut Command) {
     let status = match cmd.status() {
         Ok(status) => status,
-        Err(e) => fail(&format!("failed to execute command: {}", e)),
+        Err(e) => fail(&format!("failed to execute command: {:?}\nerror: {}",
+                                cmd, e)),
     };
     if !status.success() {
         fail(&format!("command did not execute successfully: {:?}\n\
-                       expected success, got: {}", cmd, status));
+                       expected success, got: {}",
+                      cmd,
+                      status));
     }
 }
 
@@ -39,9 +42,13 @@ pub fn gnu_target(target: &str) -> String {
     }
 }
 
-pub fn cc2ar(cc: &Path, target: &str) -> PathBuf {
-    if target.contains("musl") || target.contains("msvc") {
-        PathBuf::from("ar")
+pub fn cc2ar(cc: &Path, target: &str) -> Option<PathBuf> {
+    if target.contains("msvc") {
+        None
+    } else if target.contains("musl") {
+        Some(PathBuf::from("ar"))
+    } else if target.contains("openbsd") {
+        Some(PathBuf::from("ar"))
     } else {
         let parent = cc.parent().unwrap();
         let file = cc.file_name().unwrap().to_str().unwrap();
@@ -49,21 +56,34 @@ pub fn cc2ar(cc: &Path, target: &str) -> PathBuf {
             if let Some(idx) = file.rfind(suffix) {
                 let mut file = file[..idx].to_owned();
                 file.push_str("ar");
-                return parent.join(&file);
+                return Some(parent.join(&file));
             }
         }
-        parent.join(file)
+        Some(parent.join(file))
+    }
+}
+
+pub fn make(host: &str) -> PathBuf {
+    if host.contains("bitrig") || host.contains("dragonfly") ||
+        host.contains("freebsd") || host.contains("netbsd") ||
+        host.contains("openbsd") {
+        PathBuf::from("gmake")
+    } else {
+        PathBuf::from("make")
     }
 }
 
 pub fn output(cmd: &mut Command) -> String {
     let output = match cmd.stderr(Stdio::inherit()).output() {
         Ok(status) => status,
-        Err(e) => fail(&format!("failed to execute command: {}", e)),
+        Err(e) => fail(&format!("failed to execute command: {:?}\nerror: {}",
+                                cmd, e)),
     };
     if !output.status.success() {
         panic!("command did not execute successfully: {:?}\n\
-                expected success, got: {}", cmd, output.status);
+                expected success, got: {}",
+               cmd,
+               output.status);
     }
     String::from_utf8(output.stdout).unwrap()
 }

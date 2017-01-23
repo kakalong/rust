@@ -25,19 +25,24 @@
 
 #![feature(rustc_private)]
 #![feature(staged_api)]
-#![feature(question_mark)]
+#![feature(const_fn)]
+#![cfg_attr(not(stage0), feature(i128))]
 
-#[macro_use] extern crate log;
-#[macro_use] extern crate syntax;
+extern crate syntax;
+
+// SNAP: remove use of this crate
+extern crate rustc_i128;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
+mod float;
 mod int;
 mod us;
 mod is;
 mod err;
 
+pub use float::*;
 pub use int::*;
 pub use us::*;
 pub use is::*;
-pub use err::ConstMathErr;
+pub use err::{ConstMathErr, Op};

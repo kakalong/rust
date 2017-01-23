@@ -9,42 +9,53 @@
 // except according to those terms.
 
 use hir::def_id::DefId;
-use ty::subst::ParamSpace;
 use util::nodemap::NodeMap;
 use syntax::ast;
 use hir;
 
 #[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
-pub enum Def {
-    Fn(DefId),
-    SelfTy(Option<DefId>,                    // trait id
-              Option<(ast::NodeId, ast::NodeId)>),   // (impl id, self type id)
-    Mod(DefId),
-    ForeignMod(DefId),
-    Static(DefId, bool /* is_mutbl */),
-    Const(DefId),
-    AssociatedConst(DefId),
-    Local(DefId, // def id of variable
-             ast::NodeId), // node id of variable
-    Variant(DefId /* enum */, DefId /* variant */),
-    Enum(DefId),
-    TyAlias(DefId),
-    AssociatedTy(DefId /* trait */, DefId),
-    Trait(DefId),
-    PrimTy(hir::PrimTy),
-    TyParam(ParamSpace, u32, DefId, ast::Name),
-    Upvar(DefId,        // def id of closed over local
-             ast::NodeId,  // node id of closed over local
-             usize,        // index in the freevars list of the closure
-             ast::NodeId), // expr node that creates the closure
+pub enum CtorKind {
+    // Constructor function automatically created by a tuple struct/variant.
+    Fn,
+    // Constructor constant automatically created by a unit struct/variant.
+    Const,
+    // Unusable name in value namespace created by a struct variant.
+    Fictive,
+}
 
-    // If Def::Struct lives in type namespace it denotes a struct item and its DefId refers
-    // to NodeId of the struct itself.
-    // If Def::Struct lives in value namespace (e.g. tuple struct, unit struct expressions)
-    // it denotes a constructor and its DefId refers to NodeId of the struct's constructor.
-    Struct(DefId),
-    Label(ast::NodeId),
+#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+pub enum Def {
+    // Type namespace
+    Mod(DefId),
+    Struct(DefId), // DefId refers to NodeId of the struct itself
+    Union(DefId),
+    Enum(DefId),
+    Variant(DefId),
+    Trait(DefId),
+    TyAlias(DefId),
+    AssociatedTy(DefId),
+    PrimTy(hir::PrimTy),
+    TyParam(DefId),
+    SelfTy(Option<DefId> /* trait */, Option<DefId> /* impl */),
+
+    // Value namespace
+    Fn(DefId),
+    Const(DefId),
+    Static(DefId, bool /* is_mutbl */),
+    StructCtor(DefId, CtorKind), // DefId refers to NodeId of the struct's constructor
+    VariantCtor(DefId, CtorKind),
     Method(DefId),
+    AssociatedConst(DefId),
+    Local(DefId),
+    Upvar(DefId,        // def id of closed over local
+          usize,        // index in the freevars list of the closure
+          ast::NodeId), // expr node that creates the closure
+    Label(ast::NodeId),
+
+    // Macro namespace
+    Macro(DefId),
+
+    // Both namespaces
     Err,
 }
 
@@ -68,25 +79,15 @@ pub struct PathResolution {
 }
 
 impl PathResolution {
-    /// Get the definition, if fully resolved, otherwise panic.
-    pub fn full_def(&self) -> Def {
+    pub fn new(def: Def) -> PathResolution {
+        PathResolution { base_def: def, depth: 0 }
+    }
+
+    pub fn kind_name(&self) -> &'static str {
         if self.depth != 0 {
-            bug!("path not fully resolved: {:?}", self);
-        }
-        self.base_def
-    }
-
-    /// Get the DefId, if fully resolved, otherwise panic.
-    pub fn def_id(&self) -> DefId {
-        self.full_def().def_id()
-    }
-
-    pub fn new(base_def: Def,
-               depth: usize)
-               -> PathResolution {
-        PathResolution {
-            base_def: base_def,
-            depth: depth,
+            "associated item"
+        } else {
+            self.base_def.kind_name()
         }
     }
 }
@@ -97,37 +98,37 @@ pub type DefMap = NodeMap<PathResolution>;
 // within.
 pub type ExportMap = NodeMap<Vec<Export>>;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, RustcEncodable, RustcDecodable)]
 pub struct Export {
-    pub name: ast::Name,    // The name of the target.
-    pub def_id: DefId, // The definition of the target.
+    pub name: ast::Name, // The name of the target.
+    pub def: Def, // The definition of the target.
+}
+
+impl CtorKind {
+    pub fn from_ast(vdata: &ast::VariantData) -> CtorKind {
+        match *vdata {
+            ast::VariantData::Tuple(..) => CtorKind::Fn,
+            ast::VariantData::Unit(..) => CtorKind::Const,
+            ast::VariantData::Struct(..) => CtorKind::Fictive,
+        }
+    }
+    pub fn from_hir(vdata: &hir::VariantData) -> CtorKind {
+        match *vdata {
+            hir::VariantData::Tuple(..) => CtorKind::Fn,
+            hir::VariantData::Unit(..) => CtorKind::Const,
+            hir::VariantData::Struct(..) => CtorKind::Fictive,
+        }
+    }
 }
 
 impl Def {
-    pub fn var_id(&self) -> ast::NodeId {
-        match *self {
-            Def::Local(_, id) |
-            Def::Upvar(_, id, _, _) => {
-                id
-            }
-
-            Def::Fn(..) | Def::Mod(..) | Def::ForeignMod(..) | Def::Static(..) |
-            Def::Variant(..) | Def::Enum(..) | Def::TyAlias(..) | Def::AssociatedTy(..) |
-            Def::TyParam(..) | Def::Struct(..) | Def::Trait(..) |
-            Def::Method(..) | Def::Const(..) | Def::AssociatedConst(..) |
-            Def::PrimTy(..) | Def::Label(..) | Def::SelfTy(..) | Def::Err => {
-                bug!("attempted .var_id() on invalid {:?}", self)
-            }
-        }
-    }
-
     pub fn def_id(&self) -> DefId {
         match *self {
-            Def::Fn(id) | Def::Mod(id) | Def::ForeignMod(id) | Def::Static(id, _) |
-            Def::Variant(_, id) | Def::Enum(id) | Def::TyAlias(id) | Def::AssociatedTy(_, id) |
-            Def::TyParam(_, _, id, _) | Def::Struct(id) | Def::Trait(id) |
-            Def::Method(id) | Def::Const(id) | Def::AssociatedConst(id) |
-            Def::Local(id, _) | Def::Upvar(id, _, _, _) => {
+            Def::Fn(id) | Def::Mod(id) | Def::Static(id, _) |
+            Def::Variant(id) | Def::VariantCtor(id, ..) | Def::Enum(id) | Def::TyAlias(id) |
+            Def::AssociatedTy(id) | Def::TyParam(id) | Def::Struct(id) | Def::StructCtor(id, ..) |
+            Def::Union(id) | Def::Trait(id) | Def::Method(id) | Def::Const(id) |
+            Def::AssociatedConst(id) | Def::Local(id) | Def::Upvar(id, ..) | Def::Macro(id) => {
                 id
             }
 
@@ -140,36 +141,34 @@ impl Def {
         }
     }
 
-    pub fn variant_def_ids(&self) -> Option<(DefId, DefId)> {
-        match *self {
-            Def::Variant(enum_id, var_id) => {
-                Some((enum_id, var_id))
-            }
-            _ => None
-        }
-    }
-
     pub fn kind_name(&self) -> &'static str {
         match *self {
             Def::Fn(..) => "function",
             Def::Mod(..) => "module",
-            Def::ForeignMod(..) => "foreign module",
             Def::Static(..) => "static",
             Def::Variant(..) => "variant",
+            Def::VariantCtor(.., CtorKind::Fn) => "tuple variant",
+            Def::VariantCtor(.., CtorKind::Const) => "unit variant",
+            Def::VariantCtor(.., CtorKind::Fictive) => "struct variant",
             Def::Enum(..) => "enum",
-            Def::TyAlias(..) => "type",
+            Def::TyAlias(..) => "type alias",
             Def::AssociatedTy(..) => "associated type",
             Def::Struct(..) => "struct",
+            Def::StructCtor(.., CtorKind::Fn) => "tuple struct",
+            Def::StructCtor(.., CtorKind::Const) => "unit struct",
+            Def::StructCtor(.., CtorKind::Fictive) => bug!("impossible struct constructor"),
+            Def::Union(..) => "union",
             Def::Trait(..) => "trait",
             Def::Method(..) => "method",
-            Def::Const(..) => "const",
-            Def::AssociatedConst(..) => "associated const",
+            Def::Const(..) => "constant",
+            Def::AssociatedConst(..) => "associated constant",
             Def::TyParam(..) => "type parameter",
             Def::PrimTy(..) => "builtin type",
             Def::Local(..) => "local variable",
             Def::Upvar(..) => "closure capture",
             Def::Label(..) => "label",
             Def::SelfTy(..) => "self type",
+            Def::Macro(..) => "macro",
             Def::Err => "unresolved item",
         }
     }

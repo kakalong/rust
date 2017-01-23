@@ -15,13 +15,13 @@ use core::cmp::Ordering::{self, Less, Greater, Equal};
 use core::cmp::{min, max};
 use core::fmt::Debug;
 use core::fmt;
-use core::iter::{Peekable, FromIterator};
+use core::iter::{Peekable, FromIterator, FusedIterator};
 use core::ops::{BitOr, BitAnd, BitXor, Sub};
 
 use borrow::Borrow;
 use btree_map::{BTreeMap, Keys};
 use super::Recover;
-use Bound;
+use range::RangeArgument;
 
 // FIXME(conventions): implement bounded iterators
 
@@ -74,24 +74,44 @@ pub struct BTreeSet<T> {
     map: BTreeMap<T, ()>,
 }
 
-/// An iterator over a BTreeSet's items.
+/// An iterator over a `BTreeSet`'s items.
+///
+/// This structure is created by the [`iter`] method on [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`iter`]: struct.BTreeSet.html#method.iter
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Iter<'a, T: 'a> {
     iter: Keys<'a, T, ()>,
 }
 
-/// An owning iterator over a BTreeSet's items.
+/// An owning iterator over a `BTreeSet`'s items.
+///
+/// This structure is created by the `into_iter` method on [`BTreeSet`]
+/// [`BTreeSet`] (provided by the `IntoIterator` trait).
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IntoIter<T> {
     iter: ::btree_map::IntoIter<T, ()>,
 }
 
-/// An iterator over a sub-range of BTreeSet's items.
+/// An iterator over a sub-range of `BTreeSet`'s items.
+///
+/// This structure is created by the [`range`] method on [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`range`]: struct.BTreeSet.html#method.range
 pub struct Range<'a, T: 'a> {
     iter: ::btree_map::Range<'a, T, ()>,
 }
 
 /// A lazy iterator producing elements in the set difference (in-order).
+///
+/// This structure is created by the [`difference`] method on [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`difference`]: struct.BTreeSet.html#method.difference
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Difference<'a, T: 'a> {
     a: Peekable<Iter<'a, T>>,
@@ -99,6 +119,12 @@ pub struct Difference<'a, T: 'a> {
 }
 
 /// A lazy iterator producing elements in the set symmetric difference (in-order).
+///
+/// This structure is created by the [`symmetric_difference`] method on
+/// [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`symmetric_difference`]: struct.BTreeSet.html#method.symmetric_difference
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct SymmetricDifference<'a, T: 'a> {
     a: Peekable<Iter<'a, T>>,
@@ -106,6 +132,11 @@ pub struct SymmetricDifference<'a, T: 'a> {
 }
 
 /// A lazy iterator producing elements in the set intersection (in-order).
+///
+/// This structure is created by the [`intersection`] method on [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`intersection`]: struct.BTreeSet.html#method.intersection
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Intersection<'a, T: 'a> {
     a: Peekable<Iter<'a, T>>,
@@ -113,6 +144,11 @@ pub struct Intersection<'a, T: 'a> {
 }
 
 /// A lazy iterator producing elements in the set union (in-order).
+///
+/// This structure is created by the [`union`] method on [`BTreeSet`].
+///
+/// [`BTreeSet`]: struct.BTreeSet.html
+/// [`union`]: struct.BTreeSet.html#method.union
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Union<'a, T: 'a> {
     a: Peekable<Iter<'a, T>>,
@@ -120,7 +156,7 @@ pub struct Union<'a, T: 'a> {
 }
 
 impl<T: Ord> BTreeSet<T> {
-    /// Makes a new BTreeSet with a reasonable choice of B.
+    /// Makes a new `BTreeSet` with a reasonable choice of B.
     ///
     /// # Examples
     ///
@@ -137,21 +173,32 @@ impl<T: Ord> BTreeSet<T> {
 }
 
 impl<T> BTreeSet<T> {
-    /// Gets an iterator over the BTreeSet's contents.
+    /// Gets an iterator that visits the values in the `BTreeSet` in ascending order.
     ///
     /// # Examples
     ///
     /// ```
     /// use std::collections::BTreeSet;
     ///
-    /// let set: BTreeSet<usize> = [1, 2, 3, 4].iter().cloned().collect();
+    /// let set: BTreeSet<usize> = [1, 2, 3].iter().cloned().collect();
+    /// let mut set_iter = set.iter();
+    /// assert_eq!(set_iter.next(), Some(&1));
+    /// assert_eq!(set_iter.next(), Some(&2));
+    /// assert_eq!(set_iter.next(), Some(&3));
+    /// assert_eq!(set_iter.next(), None);
+    /// ```
     ///
-    /// for x in set.iter() {
-    ///     println!("{}", x);
-    /// }
+    /// Values returned by the iterator are returned in ascending order:
     ///
-    /// let v: Vec<_> = set.iter().cloned().collect();
-    /// assert_eq!(v, [1, 2, 3, 4]);
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let set: BTreeSet<usize> = [3, 1, 2].iter().cloned().collect();
+    /// let mut set_iter = set.iter();
+    /// assert_eq!(set_iter.next(), Some(&1));
+    /// assert_eq!(set_iter.next(), Some(&2));
+    /// assert_eq!(set_iter.next(), Some(&3));
+    /// assert_eq!(set_iter.next(), None);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn iter(&self) -> Iter<T> {
@@ -160,10 +207,12 @@ impl<T> BTreeSet<T> {
 }
 
 impl<T: Ord> BTreeSet<T> {
-    /// Constructs a double-ended iterator over a sub-range of elements in the set, starting
-    /// at min, and ending at max. If min is `Unbounded`, then it will be treated as "negative
-    /// infinity", and if max is `Unbounded`, then it will be treated as "positive infinity".
-    /// Thus range(Unbounded, Unbounded) will yield the whole collection.
+    /// Constructs a double-ended iterator over a sub-range of elements in the set.
+    /// The simplest way is to use the range syntax `min..max`, thus `range(min..max)` will
+    /// yield elements from min (inclusive) to max (exclusive).
+    /// The range may also be entered as `(Bound<T>, Bound<T>)`, so for example
+    /// `range((Excluded(4), Included(10)))` will yield a left-exclusive, right-inclusive
+    /// range from 4 to 10.
     ///
     /// # Examples
     ///
@@ -171,27 +220,24 @@ impl<T: Ord> BTreeSet<T> {
     /// #![feature(btree_range, collections_bound)]
     ///
     /// use std::collections::BTreeSet;
-    /// use std::collections::Bound::{Included, Unbounded};
+    /// use std::collections::Bound::Included;
     ///
     /// let mut set = BTreeSet::new();
     /// set.insert(3);
     /// set.insert(5);
     /// set.insert(8);
-    /// for &elem in set.range(Included(&4), Included(&8)) {
+    /// for &elem in set.range((Included(&4), Included(&8))) {
     ///     println!("{}", elem);
     /// }
-    /// assert_eq!(Some(&5), set.range(Included(&4), Unbounded).next());
+    /// assert_eq!(Some(&5), set.range(4..).next());
     /// ```
     #[unstable(feature = "btree_range",
                reason = "matches collection reform specification, waiting for dust to settle",
                issue = "27787")]
-    pub fn range<'a, Min: ?Sized + Ord, Max: ?Sized + Ord>(&'a self,
-                                                           min: Bound<&Min>,
-                                                           max: Bound<&Max>)
-                                                           -> Range<'a, T>
-        where T: Borrow<Min> + Borrow<Max>
+    pub fn range<K: ?Sized, R>(&self, range: R) -> Range<T>
+        where K: Ord, T: Borrow<K>, R: RangeArgument<K>
     {
-        Range { iter: self.map.range(min, max) }
+        Range { iter: self.map.range(range) }
     }
 }
 
@@ -477,9 +523,9 @@ impl<T: Ord> BTreeSet<T> {
 
     /// Adds a value to the set.
     ///
-    /// If the set did not have a value present, `true` is returned.
+    /// If the set did not have this value present, `true` is returned.
     ///
-    /// If the set did have this key present, `false` is returned, and the
+    /// If the set did have this value present, `false` is returned, and the
     /// entry is not updated. See the [module-level documentation] for more.
     ///
     /// [module-level documentation]: index.html#insert-and-complex-keys
@@ -545,6 +591,73 @@ impl<T: Ord> BTreeSet<T> {
     {
         Recover::take(&mut self.map, value)
     }
+
+    /// Moves all elements from `other` into `Self`, leaving `other` empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let mut a = BTreeSet::new();
+    /// a.insert(1);
+    /// a.insert(2);
+    /// a.insert(3);
+    ///
+    /// let mut b = BTreeSet::new();
+    /// b.insert(3);
+    /// b.insert(4);
+    /// b.insert(5);
+    ///
+    /// a.append(&mut b);
+    ///
+    /// assert_eq!(a.len(), 5);
+    /// assert_eq!(b.len(), 0);
+    ///
+    /// assert!(a.contains(&1));
+    /// assert!(a.contains(&2));
+    /// assert!(a.contains(&3));
+    /// assert!(a.contains(&4));
+    /// assert!(a.contains(&5));
+    /// ```
+    #[stable(feature = "btree_append", since = "1.11.0")]
+    pub fn append(&mut self, other: &mut Self) {
+        self.map.append(&mut other.map);
+    }
+
+    /// Splits the collection into two at the given key. Returns everything after the given key,
+    /// including the key.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let mut a = BTreeMap::new();
+    /// a.insert(1, "a");
+    /// a.insert(2, "b");
+    /// a.insert(3, "c");
+    /// a.insert(17, "d");
+    /// a.insert(41, "e");
+    ///
+    /// let b = a.split_off(&3);
+    ///
+    /// assert_eq!(a.len(), 2);
+    /// assert_eq!(b.len(), 3);
+    ///
+    /// assert_eq!(a[&1], "a");
+    /// assert_eq!(a[&2], "b");
+    ///
+    /// assert_eq!(b[&3], "c");
+    /// assert_eq!(b[&17], "d");
+    /// assert_eq!(b[&41], "e");
+    /// ```
+    #[stable(feature = "btree_split_off", since = "1.11.0")]
+    pub fn split_off<Q: ?Sized + Ord>(&mut self, key: &Q) -> Self where T: Borrow<Q> {
+        BTreeSet { map: self.map.split_off(key) }
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -607,6 +720,7 @@ impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Default for BTreeSet<T> {
+    /// Makes an empty `BTreeSet<T>` with a reasonable choice of B.
     fn default() -> BTreeSet<T> {
         BTreeSet::new()
     }
@@ -711,6 +825,7 @@ impl<T: Debug> Debug for BTreeSet<T> {
     }
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for Iter<'a, T> {
     fn clone(&self) -> Iter<'a, T> {
         Iter { iter: self.iter.clone() }
@@ -738,6 +853,8 @@ impl<'a, T> ExactSizeIterator for Iter<'a, T> {
     fn len(&self) -> usize { self.iter.len() }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T> FusedIterator for Iter<'a, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Iterator for IntoIter<T> {
@@ -761,6 +878,8 @@ impl<T> ExactSizeIterator for IntoIter<T> {
     fn len(&self) -> usize { self.iter.len() }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<T> FusedIterator for IntoIter<T> {}
 
 impl<'a, T> Clone for Range<'a, T> {
     fn clone(&self) -> Range<'a, T> {
@@ -780,6 +899,9 @@ impl<'a, T> DoubleEndedIterator for Range<'a, T> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T> FusedIterator for Range<'a, T> {}
+
 /// Compare `x` and `y`, but return `short` if x is None and `long` if y is None
 fn cmp_opt<T: Ord>(x: Option<&T>, y: Option<&T>, short: Ordering, long: Ordering) -> Ordering {
     match (x, y) {
@@ -789,6 +911,7 @@ fn cmp_opt<T: Ord>(x: Option<&T>, y: Option<&T>, short: Ordering, long: Ordering
     }
 }
 
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for Difference<'a, T> {
     fn clone(&self) -> Difference<'a, T> {
         Difference {
@@ -823,6 +946,10 @@ impl<'a, T: Ord> Iterator for Difference<'a, T> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T: Ord> FusedIterator for Difference<'a, T> {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for SymmetricDifference<'a, T> {
     fn clone(&self) -> SymmetricDifference<'a, T> {
         SymmetricDifference {
@@ -853,6 +980,10 @@ impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T: Ord> FusedIterator for SymmetricDifference<'a, T> {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for Intersection<'a, T> {
     fn clone(&self) -> Intersection<'a, T> {
         Intersection {
@@ -893,6 +1024,10 @@ impl<'a, T: Ord> Iterator for Intersection<'a, T> {
     }
 }
 
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T: Ord> FusedIterator for Intersection<'a, T> {}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, T> Clone for Union<'a, T> {
     fn clone(&self) -> Union<'a, T> {
         Union {
@@ -924,3 +1059,6 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
         (max(a_len, b_len), Some(a_len + b_len))
     }
 }
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T: Ord> FusedIterator for Union<'a, T> {}

@@ -10,7 +10,7 @@
 
 use syntax::ast;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, RustcEncodable, RustcDecodable)]
 pub enum ConstMathErr {
     NotInRange,
     CmpBetweenUnequalTypes,
@@ -25,7 +25,7 @@ pub enum ConstMathErr {
 }
 pub use self::ConstMathErr::*;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, RustcEncodable, RustcDecodable)]
 pub enum Op {
     Add,
     Sub,
@@ -45,40 +45,42 @@ impl ConstMathErr {
         use self::Op::*;
         match *self {
             NotInRange => "inferred value out of range",
-            CmpBetweenUnequalTypes => "compared two integrals of different types",
-            UnequalTypes(Add) => "tried to add two integrals of different types",
-            UnequalTypes(Sub) => "tried to subtract two integrals of different types",
-            UnequalTypes(Mul) => "tried to multiply two integrals of different types",
-            UnequalTypes(Div) => "tried to divide two integrals of different types",
+            CmpBetweenUnequalTypes => "compared two values of different types",
+            UnequalTypes(Add) => "tried to add two values of different types",
+            UnequalTypes(Sub) => "tried to subtract two values of different types",
+            UnequalTypes(Mul) => "tried to multiply two values of different types",
+            UnequalTypes(Div) => "tried to divide two values of different types",
             UnequalTypes(Rem) => {
-                "tried to calculate the remainder of two integrals of different types"
+                "tried to calculate the remainder of two values of different types"
             },
-            UnequalTypes(BitAnd) => "tried to bitand two integrals of different types",
-            UnequalTypes(BitOr) => "tried to bitor two integrals of different types",
-            UnequalTypes(BitXor) => "tried to xor two integrals of different types",
+            UnequalTypes(BitAnd) => "tried to bitand two values of different types",
+            UnequalTypes(BitOr) => "tried to bitor two values of different types",
+            UnequalTypes(BitXor) => "tried to xor two values of different types",
             UnequalTypes(_) => unreachable!(),
-            Overflow(Add) => "attempted to add with overflow",
-            Overflow(Sub) => "attempted to subtract with overflow",
-            Overflow(Mul) => "attempted to multiply with overflow",
-            Overflow(Div) => "attempted to divide with overflow",
-            Overflow(Rem) => "attempted to calculate the remainder with overflow",
-            Overflow(Neg) => "attempted to negate with overflow",
-            Overflow(Shr) => "attempted to shift right with overflow",
-            Overflow(Shl) => "attempted to shift left with overflow",
+            Overflow(Add) => "attempt to add with overflow",
+            Overflow(Sub) => "attempt to subtract with overflow",
+            Overflow(Mul) => "attempt to multiply with overflow",
+            Overflow(Div) => "attempt to divide with overflow",
+            Overflow(Rem) => "attempt to calculate the remainder with overflow",
+            Overflow(Neg) => "attempt to negate with overflow",
+            Overflow(Shr) => "attempt to shift right with overflow",
+            Overflow(Shl) => "attempt to shift left with overflow",
             Overflow(_) => unreachable!(),
-            ShiftNegative => "attempted to shift by a negative amount",
-            DivisionByZero => "attempted to divide by zero",
-            RemainderByZero => "attempted to calculate the remainder with a divisor of zero",
+            ShiftNegative => "attempt to shift by a negative amount",
+            DivisionByZero => "attempt to divide by zero",
+            RemainderByZero => "attempt to calculate the remainder with a divisor of zero",
             UnsignedNegation => "unary negation of unsigned integer",
             ULitOutOfRange(ast::UintTy::U8) => "literal out of range for u8",
             ULitOutOfRange(ast::UintTy::U16) => "literal out of range for u16",
             ULitOutOfRange(ast::UintTy::U32) => "literal out of range for u32",
             ULitOutOfRange(ast::UintTy::U64) => "literal out of range for u64",
+            ULitOutOfRange(ast::UintTy::U128) => "literal out of range for u128",
             ULitOutOfRange(ast::UintTy::Us) => "literal out of range for usize",
             LitOutOfRange(ast::IntTy::I8) => "literal out of range for i8",
             LitOutOfRange(ast::IntTy::I16) => "literal out of range for i16",
             LitOutOfRange(ast::IntTy::I32) => "literal out of range for i32",
             LitOutOfRange(ast::IntTy::I64) => "literal out of range for i64",
+            LitOutOfRange(ast::IntTy::I128) => "literal out of range for i128",
             LitOutOfRange(ast::IntTy::Is) => "literal out of range for isize",
         }
     }

@@ -26,8 +26,7 @@ two languages for those phrases to be in. We’ll use this module layout:
 ```text
                                     +-----------+
                                 +---| greetings |
-                                |   +-----------+
-                  +---------+   |
+                  +---------+   |   +-----------+
               +---| english |---+
               |   +---------+   |   +-----------+
               |                 +---| farewells |
@@ -37,8 +36,7 @@ two languages for those phrases to be in. We’ll use this module layout:
               |                 +---| greetings |
               |   +----------+  |   +-----------+
               +---| japanese |--+
-                  +----------+  |
-                                |   +-----------+
+                  +----------+  |   +-----------+
                                 +---| farewells |
                                     +-----------+
 ```
@@ -115,7 +113,7 @@ $ ls target/debug
 build  deps  examples  libphrases-a7448e02a0468eaa.rlib  native
 ```
 
-`libphrases-hash.rlib` is the compiled crate. Before we see how to use this
+`libphrases-<hash>.rlib` is the compiled crate. Before we see how to use this
 crate from another crate, let’s break it up into multiple files.
 
 # Multiple File Crates
@@ -128,7 +126,7 @@ Instead of declaring a module like this:
 
 ```rust,ignore
 mod english {
-    // contents of our module go here
+    // Contents of our module go here.
 }
 ```
 

@@ -8,12 +8,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use prelude::v1::*;
-
 use cmp;
 use io;
 use libc::{self, c_int};
 use mem;
+use ptr;
 use sys::cvt_r;
 use sys::fd::FileDesc;
 
@@ -44,17 +43,18 @@ pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
         }
     }
     if unsafe { libc::pipe(fds.as_mut_ptr()) == 0 } {
-        Ok((AnonPipe::from_fd(fds[0]), AnonPipe::from_fd(fds[1])))
+        let fd0 = FileDesc::new(fds[0]);
+        let fd1 = FileDesc::new(fds[1]);
+        Ok((AnonPipe::from_fd(fd0)?, AnonPipe::from_fd(fd1)?))
     } else {
         Err(io::Error::last_os_error())
     }
 }
 
 impl AnonPipe {
-    pub fn from_fd(fd: libc::c_int) -> AnonPipe {
-        let fd = FileDesc::new(fd);
-        fd.set_cloexec();
-        AnonPipe(fd)
+    pub fn from_fd(fd: FileDesc) -> io::Result<AnonPipe> {
+        fd.set_cloexec()?;
+        Ok(AnonPipe(fd))
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -77,12 +77,13 @@ pub fn read2(p1: AnonPipe,
              v1: &mut Vec<u8>,
              p2: AnonPipe,
              v2: &mut Vec<u8>) -> io::Result<()> {
+
     // Set both pipes into nonblocking mode as we're gonna be reading from both
     // in the `select` loop below, and we wouldn't want one to block the other!
     let p1 = p1.into_fd();
     let p2 = p2.into_fd();
-    p1.set_nonblocking(true);
-    p2.set_nonblocking(true);
+    p1.set_nonblocking(true)?;
+    p2.set_nonblocking(true)?;
 
     let max = cmp::max(p1.raw(), p2.raw());
     loop {
@@ -91,8 +92,8 @@ pub fn read2(p1: AnonPipe,
             let mut read: libc::fd_set = mem::zeroed();
             libc::FD_SET(p1.raw(), &mut read);
             libc::FD_SET(p2.raw(), &mut read);
-            libc::select(max + 1, &mut read, 0 as *mut _, 0 as *mut _,
-                         0 as *mut _)
+            libc::select(max + 1, &mut read, ptr::null_mut(), ptr::null_mut(),
+                         ptr::null_mut())
         })?;
 
         // Read as much as we can from each pipe, ignoring EWOULDBLOCK or
@@ -114,11 +115,11 @@ pub fn read2(p1: AnonPipe,
             }
         };
         if read(&p1, v1)? {
-            p2.set_nonblocking(false);
+            p2.set_nonblocking(false)?;
             return p2.read_to_end(v2).map(|_| ());
         }
         if read(&p2, v2)? {
-            p1.set_nonblocking(false);
+            p1.set_nonblocking(false)?;
             return p1.read_to_end(v1).map(|_| ());
         }
     }

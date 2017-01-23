@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use target::Target;
+use target::{Target, TargetResult};
 
-pub fn target() -> Target {
+pub fn target() -> TargetResult {
     let mut base = super::windows_msvc_base::opts();
     base.cpu = "pentium4".to_string();
+    base.max_atomic_width = Some(64);
 
     // Mark all dynamic libraries and executables as compatible with the larger 4GiB address
     // space available to x86 Windows binaries on x86_64.
@@ -23,7 +24,7 @@ pub fn target() -> Target {
     // https://msdn.microsoft.com/en-us/library/9a89h429.aspx
     base.pre_link_args.push("/SAFESEH".to_string());
 
-    Target {
+    Ok(Target {
         llvm_target: "i686-pc-windows-msvc".to_string(),
         target_endian: "little".to_string(),
         target_pointer_width: "32".to_string(),
@@ -33,5 +34,5 @@ pub fn target() -> Target {
         target_env: "msvc".to_string(),
         target_vendor: "pc".to_string(),
         options: base,
-    }
+    })
 }

@@ -151,9 +151,9 @@
 #![allow(missing_docs)]
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use core::iter::FromIterator;
-use core::mem::swap;
-use core::mem::size_of;
+use core::ops::{Deref, DerefMut, Place, Placer, InPlace};
+use core::iter::{FromIterator, FusedIterator};
+use core::mem::{swap, size_of};
 use core::ptr;
 use core::fmt;
 
@@ -218,6 +218,50 @@ pub struct BinaryHeap<T> {
     data: Vec<T>,
 }
 
+/// A container object that represents the result of the [`peek_mut()`] method
+/// on `BinaryHeap`. See its documentation for details.
+///
+/// [`peek_mut()`]: struct.BinaryHeap.html#method.peek_mut
+#[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
+pub struct PeekMut<'a, T: 'a + Ord> {
+    heap: &'a mut BinaryHeap<T>,
+    sift: bool,
+}
+
+#[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
+impl<'a, T: Ord> Drop for PeekMut<'a, T> {
+    fn drop(&mut self) {
+        if self.sift {
+            self.heap.sift_down(0);
+        }
+    }
+}
+
+#[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
+impl<'a, T: Ord> Deref for PeekMut<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.heap.data[0]
+    }
+}
+
+#[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
+impl<'a, T: Ord> DerefMut for PeekMut<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.heap.data[0]
+    }
+}
+
+impl<'a, T: Ord> PeekMut<'a, T> {
+    /// Removes the peeked value from the heap and returns it.
+    #[unstable(feature = "binary_heap_peek_mut_pop", issue = "38863")]
+    pub fn pop(mut this: PeekMut<'a, T>) -> T {
+        let value = this.heap.pop().unwrap();
+        this.sift = false;
+        value
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Clone> Clone for BinaryHeap<T> {
     fn clone(&self) -> Self {
@@ -231,6 +275,7 @@ impl<T: Clone> Clone for BinaryHeap<T> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Default for BinaryHeap<T> {
+    /// Creates an empty `BinaryHeap<T>`.
     #[inline]
     fn default() -> BinaryHeap<T> {
         BinaryHeap::new()
@@ -321,6 +366,42 @@ impl<T: Ord> BinaryHeap<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn peek(&self) -> Option<&T> {
         self.data.get(0)
+    }
+
+    /// Returns a mutable reference to the greatest item in the binary heap, or
+    /// `None` if it is empty.
+    ///
+    /// Note: If the `PeekMut` value is leaked, the heap may be in an
+    /// inconsistent state.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// use std::collections::BinaryHeap;
+    /// let mut heap = BinaryHeap::new();
+    /// assert!(heap.peek_mut().is_none());
+    ///
+    /// heap.push(1);
+    /// heap.push(5);
+    /// heap.push(2);
+    /// {
+    ///     let mut val = heap.peek_mut().unwrap();
+    ///     *val = 0;
+    /// }
+    /// assert_eq!(heap.peek(), Some(&2));
+    /// ```
+    #[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
+    pub fn peek_mut(&mut self) -> Option<PeekMut<T>> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(PeekMut {
+                heap: self,
+                sift: true,
+            })
+        }
     }
 
     /// Returns the number of elements the binary heap can hold without reallocating.
@@ -467,6 +548,7 @@ impl<T: Ord> BinaryHeap<T> {
     ///
     /// ```
     /// #![feature(binary_heap_extras)]
+    /// #![allow(deprecated)]
     ///
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
@@ -481,6 +563,7 @@ impl<T: Ord> BinaryHeap<T> {
     #[unstable(feature = "binary_heap_extras",
                reason = "needs to be audited",
                issue = "28147")]
+    #[rustc_deprecated(since = "1.13.0", reason = "use `peek_mut` instead")]
     pub fn push_pop(&mut self, mut item: T) -> T {
         match self.data.get_mut(0) {
             None => return item,
@@ -507,6 +590,7 @@ impl<T: Ord> BinaryHeap<T> {
     ///
     /// ```
     /// #![feature(binary_heap_extras)]
+    /// #![allow(deprecated)]
     ///
     /// use std::collections::BinaryHeap;
     /// let mut heap = BinaryHeap::new();
@@ -519,6 +603,7 @@ impl<T: Ord> BinaryHeap<T> {
     #[unstable(feature = "binary_heap_extras",
                reason = "needs to be audited",
                issue = "28147")]
+    #[rustc_deprecated(since = "1.13.0", reason = "use `peek_mut` instead")]
     pub fn replace(&mut self, mut item: T) -> Option<T> {
         if !self.is_empty() {
             swap(&mut item, &mut self.data[0]);
@@ -588,7 +673,7 @@ impl<T: Ord> BinaryHeap<T> {
     // the hole is filled back at the end of its scope, even on panic.
     // Using a hole reduces the constant factor compared to using swaps,
     // which involves twice as many moves.
-    fn sift_up(&mut self, start: usize, pos: usize) {
+    fn sift_up(&mut self, start: usize, pos: usize) -> usize {
         unsafe {
             // Take out the value at `pos` and create a hole.
             let mut hole = Hole::new(&mut self.data, pos);
@@ -600,6 +685,7 @@ impl<T: Ord> BinaryHeap<T> {
                 }
                 hole.move_to(parent);
             }
+            hole.pos()
         }
     }
 
@@ -757,8 +843,6 @@ impl<T: Ord> BinaryHeap<T> {
     /// Basic usage:
     ///
     /// ```
-    /// #![feature(binary_heap_append)]
-    ///
     /// use std::collections::BinaryHeap;
     ///
     /// let v = vec![-10, 1, 2, 3, 3];
@@ -772,9 +856,7 @@ impl<T: Ord> BinaryHeap<T> {
     /// assert_eq!(a.into_sorted_vec(), [-20, -10, 1, 2, 3, 3, 5, 43]);
     /// assert!(b.is_empty());
     /// ```
-    #[unstable(feature = "binary_heap_append",
-           reason = "needs to be audited",
-           issue = "32526")]
+    #[stable(feature = "binary_heap_append", since = "1.11.0")]
     pub fn append(&mut self, other: &mut Self) {
         if self.len() < other.len() {
             swap(self, other);
@@ -821,58 +903,61 @@ struct Hole<'a, T: 'a> {
 
 impl<'a, T> Hole<'a, T> {
     /// Create a new Hole at index `pos`.
-    fn new(data: &'a mut [T], pos: usize) -> Self {
-        unsafe {
-            let elt = ptr::read(&data[pos]);
-            Hole {
-                data: data,
-                elt: Some(elt),
-                pos: pos,
-            }
+    ///
+    /// Unsafe because pos must be within the data slice.
+    #[inline]
+    unsafe fn new(data: &'a mut [T], pos: usize) -> Self {
+        debug_assert!(pos < data.len());
+        let elt = ptr::read(&data[pos]);
+        Hole {
+            data: data,
+            elt: Some(elt),
+            pos: pos,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn pos(&self) -> usize {
         self.pos
     }
 
     /// Return a reference to the element removed
-    #[inline(always)]
+    #[inline]
     fn element(&self) -> &T {
         self.elt.as_ref().unwrap()
     }
 
     /// Return a reference to the element at `index`.
     ///
-    /// Panics if the index is out of bounds.
-    ///
-    /// Unsafe because index must not equal pos.
-    #[inline(always)]
+    /// Unsafe because index must be within the data slice and not equal to pos.
+    #[inline]
     unsafe fn get(&self, index: usize) -> &T {
         debug_assert!(index != self.pos);
-        &self.data[index]
+        debug_assert!(index < self.data.len());
+        self.data.get_unchecked(index)
     }
 
     /// Move hole to new location
     ///
-    /// Unsafe because index must not equal pos.
-    #[inline(always)]
+    /// Unsafe because index must be within the data slice and not equal to pos.
+    #[inline]
     unsafe fn move_to(&mut self, index: usize) {
         debug_assert!(index != self.pos);
-        let index_ptr: *const _ = &self.data[index];
-        let hole_ptr = &mut self.data[self.pos];
+        debug_assert!(index < self.data.len());
+        let index_ptr: *const _ = self.data.get_unchecked(index);
+        let hole_ptr = self.data.get_unchecked_mut(self.pos);
         ptr::copy_nonoverlapping(index_ptr, hole_ptr, 1);
         self.pos = index;
     }
 }
 
 impl<'a, T> Drop for Hole<'a, T> {
+    #[inline]
     fn drop(&mut self) {
         // fill the hole again
         unsafe {
             let pos = self.pos;
-            ptr::write(&mut self.data[pos], self.elt.take().unwrap());
+            ptr::write(self.data.get_unchecked_mut(pos), self.elt.take().unwrap());
         }
     }
 }
@@ -915,7 +1000,14 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T> FusedIterator for Iter<'a, T> {}
 
 /// An iterator that moves out of a `BinaryHeap`.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -948,7 +1040,14 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> ExactSizeIterator for IntoIter<T> {}
+impl<T> ExactSizeIterator for IntoIter<T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<T> FusedIterator for IntoIter<T> {}
 
 /// An iterator that drains a `BinaryHeap`.
 #[stable(feature = "drain", since = "1.6.0")]
@@ -956,7 +1055,7 @@ pub struct Drain<'a, T: 'a> {
     iter: vec::Drain<'a, T>,
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "drain", since = "1.6.0")]
 impl<'a, T: 'a> Iterator for Drain<'a, T> {
     type Item = T;
 
@@ -971,7 +1070,7 @@ impl<'a, T: 'a> Iterator for Drain<'a, T> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
+#[stable(feature = "drain", since = "1.6.0")]
 impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
     #[inline]
     fn next_back(&mut self) -> Option<T> {
@@ -979,8 +1078,15 @@ impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
     }
 }
 
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {}
+#[stable(feature = "drain", since = "1.6.0")]
+impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
+
+#[unstable(feature = "fused", issue = "35602")]
+impl<'a, T: 'a> FusedIterator for Drain<'a, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> From<Vec<T>> for BinaryHeap<T> {
@@ -1034,7 +1140,9 @@ impl<T: Ord> IntoIterator for BinaryHeap<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> IntoIterator for &'a BinaryHeap<T> where T: Ord {
+impl<'a, T> IntoIterator for &'a BinaryHeap<T>
+    where T: Ord
+{
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
 
@@ -1080,5 +1188,58 @@ impl<T: Ord> BinaryHeap<T> {
 impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BinaryHeap<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+pub struct BinaryHeapPlace<'a, T: 'a>
+where T: Clone + Ord {
+    heap: *mut BinaryHeap<T>,
+    place: vec::PlaceBack<'a, T>,
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T: 'a> Placer<T> for &'a mut BinaryHeap<T>
+where T: Clone + Ord {
+    type Place = BinaryHeapPlace<'a, T>;
+
+    fn make_place(self) -> Self::Place {
+        let ptr = self as *mut BinaryHeap<T>;
+        let place = Placer::make_place(self.data.place_back());
+        BinaryHeapPlace {
+            heap: ptr,
+            place: place,
+        }
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T> Place<T> for BinaryHeapPlace<'a, T>
+where T: Clone + Ord {
+    fn pointer(&mut self) -> *mut T {
+        self.place.pointer()
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T> InPlace<T> for BinaryHeapPlace<'a, T>
+where T: Clone + Ord {
+    type Owner = &'a T;
+
+    unsafe fn finalize(self) -> &'a T {
+        self.place.finalize();
+
+        let heap: &mut BinaryHeap<T> = &mut *self.heap;
+        let len = heap.len();
+        let i = heap.sift_up(0, len - 1);
+        heap.data.get_unchecked(i)
     }
 }

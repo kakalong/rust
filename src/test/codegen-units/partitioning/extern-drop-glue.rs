@@ -9,7 +9,10 @@
 // except according to those terms.
 
 // ignore-tidy-linelength
-// compile-flags:-Zprint-trans-items=lazy
+
+// We specify -Z incremental here because we want to test the partitioning for
+// incremental compilation
+// compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/extern-drop-glue
 
 #![allow(dead_code)]
 #![crate_type="lib"]
@@ -17,14 +20,15 @@
 // aux-build:cgu_extern_drop_glue.rs
 extern crate cgu_extern_drop_glue;
 
-//~ TRANS_ITEM drop-glue cgu_extern_drop_glue::Struct[0] @@ extern_drop_glue[OnceODR] extern_drop_glue-mod1[OnceODR]
+//~ TRANS_ITEM drop-glue cgu_extern_drop_glue::Struct[0] @@ extern_drop_glue[Internal] extern_drop_glue-mod1[Internal]
+//~ TRANS_ITEM drop-glue-contents cgu_extern_drop_glue::Struct[0] @@ extern_drop_glue[Internal] extern_drop_glue-mod1[Internal]
 
 struct LocalStruct(cgu_extern_drop_glue::Struct);
 
-//~ TRANS_ITEM fn extern_drop_glue::user[0] @@ extern_drop_glue[WeakODR]
+//~ TRANS_ITEM fn extern_drop_glue::user[0] @@ extern_drop_glue[External]
 fn user()
 {
-    //~ TRANS_ITEM drop-glue extern_drop_glue::LocalStruct[0] @@ extern_drop_glue[OnceODR]
+    //~ TRANS_ITEM drop-glue extern_drop_glue::LocalStruct[0] @@ extern_drop_glue[Internal]
     let _ = LocalStruct(cgu_extern_drop_glue::Struct(0));
 }
 
@@ -33,11 +37,10 @@ mod mod1 {
 
     struct LocalStruct(cgu_extern_drop_glue::Struct);
 
-    //~ TRANS_ITEM fn extern_drop_glue::mod1[0]::user[0] @@ extern_drop_glue-mod1[WeakODR]
+    //~ TRANS_ITEM fn extern_drop_glue::mod1[0]::user[0] @@ extern_drop_glue-mod1[External]
     fn user()
     {
-        //~ TRANS_ITEM drop-glue extern_drop_glue::mod1[0]::LocalStruct[0] @@ extern_drop_glue-mod1[OnceODR]
+        //~ TRANS_ITEM drop-glue extern_drop_glue::mod1[0]::LocalStruct[0] @@ extern_drop_glue-mod1[Internal]
         let _ = LocalStruct(cgu_extern_drop_glue::Struct(0));
     }
 }
-

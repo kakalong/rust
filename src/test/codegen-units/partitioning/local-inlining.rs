@@ -9,7 +9,9 @@
 // except according to those terms.
 
 // ignore-tidy-linelength
-// compile-flags:-Zprint-trans-items=lazy
+// We specify -Z incremental here because we want to test the partitioning for
+// incremental compilation
+// compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/local-inlining
 
 #![allow(dead_code)]
 #![crate_type="lib"]
@@ -17,7 +19,7 @@
 mod inline {
 
     // Important: This function should show up in all codegen units where it is inlined
-    //~ TRANS_ITEM fn local_inlining::inline[0]::inlined_function[0] @@ local_inlining-inline[WeakODR] local_inlining-user1[Available] local_inlining-user2[Available]
+    //~ TRANS_ITEM fn local_inlining::inline[0]::inlined_function[0] @@ local_inlining-user1[Internal] local_inlining-user2[Internal]
     #[inline(always)]
     pub fn inlined_function()
     {
@@ -28,7 +30,7 @@ mod inline {
 mod user1 {
     use super::inline;
 
-    //~ TRANS_ITEM fn local_inlining::user1[0]::foo[0] @@ local_inlining-user1[WeakODR]
+    //~ TRANS_ITEM fn local_inlining::user1[0]::foo[0] @@ local_inlining-user1[External]
     fn foo() {
         inline::inlined_function();
     }
@@ -37,7 +39,7 @@ mod user1 {
 mod user2 {
     use super::inline;
 
-    //~ TRANS_ITEM fn local_inlining::user2[0]::bar[0] @@ local_inlining-user2[WeakODR]
+    //~ TRANS_ITEM fn local_inlining::user2[0]::bar[0] @@ local_inlining-user2[External]
     fn bar() {
         inline::inlined_function();
     }
@@ -45,10 +47,8 @@ mod user2 {
 
 mod non_user {
 
-    //~ TRANS_ITEM fn local_inlining::non_user[0]::baz[0] @@ local_inlining-non_user[WeakODR]
+    //~ TRANS_ITEM fn local_inlining::non_user[0]::baz[0] @@ local_inlining-non_user[External]
     fn baz() {
 
     }
 }
-
-//~ TRANS_ITEM drop-glue i8

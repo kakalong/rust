@@ -65,11 +65,6 @@ $(foreach host,$(CFG_HOST), \
 # $(4) is the crate name
 define RUST_TARGET_STAGE_N
 
-ifeq ($(1),0)
-$$(TLIB$(1)_T_$(2)_H_$(3))/stamp.$(4): \
-	export RUSTC_BOOTSTRAP_KEY := $$(CFG_BOOTSTRAP_KEY_STAGE0)
-endif
-
 $$(TLIB$(1)_T_$(2)_H_$(3))/stamp.$(4): CFG_COMPILER_HOST_TRIPLE = $(2)
 $$(TLIB$(1)_T_$(2)_H_$(3))/stamp.$(4): \
 		$$(CRATEFILE_$(4)) \
@@ -117,11 +112,6 @@ endef
 # $(3) - host triple
 # $(4) - name of the tool being built
 define TARGET_TOOL
-
-ifeq ($(1),0)
-$$(TBIN$(1)_T_$(2)_H_$(3))/$(4)$$(X_$(2)): \
-	export RUSTC_BOOTSTRAP_KEY := $$(CFG_BOOTSTRAP_KEY_STAGE0)
-endif
 
 $$(TBIN$(1)_T_$(2)_H_$(3))/$(4)$$(X_$(2)): \
 		$$(TOOL_SOURCE_$(4)) \

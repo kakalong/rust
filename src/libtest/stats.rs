@@ -11,7 +11,7 @@
 #![allow(missing_docs)]
 #![allow(deprecated)] // Float
 
-use std::cmp::Ordering::{self, Less, Greater, Equal};
+use std::cmp::Ordering::{self, Equal, Greater, Less};
 use std::mem;
 
 fn local_cmp(x: f64, y: f64) -> Ordering {
@@ -35,7 +35,6 @@ fn local_sort(v: &mut [f64]) {
 
 /// Trait that provides simple descriptive statistics on a univariate set of numeric samples.
 pub trait Stats {
-
     /// Sum of the samples.
     ///
     /// Note: this method sacrifices performance at the altar of accuracy
@@ -121,7 +120,7 @@ pub trait Stats {
 }
 
 /// Extracted collection of all the summary statistics of a sample set.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Copy)]
 #[allow(missing_docs)]
 pub struct Summary {
     pub sum: f64,
@@ -897,4 +896,7 @@ mod bench {
             v.sum();
         })
     }
+
+    #[bench]
+    pub fn no_iter(_: &mut Bencher) {}
 }

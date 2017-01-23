@@ -23,6 +23,33 @@ match x {
 
 This prints `one`.
 
+It's possible to create a binding for the value in the any case:
+
+```rust
+let x = 1;
+
+match x {
+    y => println!("x: {} y: {}", x, y),
+}
+```
+
+This prints:
+
+```text
+x: 1 y: 1
+```
+
+Note it is an error to have both a catch-all `_` and a catch-all binding in the same match block:
+
+```rust
+let x = 1;
+
+match x {
+    y => println!("x: {} y: {}", x, y),
+    _ => println!("anything"), // this causes an error as it is unreachable
+}
+```
+
 There’s one pitfall with patterns: like anything that introduces a new binding,
 they introduce shadowing. For example:
 
@@ -109,14 +136,14 @@ struct Point {
     y: i32,
 }
 
-let origin = Point { x: 0, y: 0 };
+let point = Point { x: 2, y: 3 };
 
-match origin {
+match point {
     Point { x, .. } => println!("x is {}", x),
 }
 ```
 
-This prints `x is 0`.
+This prints `x is 2`.
 
 You can do this kind of match on any member, not only the first:
 
@@ -126,14 +153,14 @@ struct Point {
     y: i32,
 }
 
-let origin = Point { x: 0, y: 0 };
+let point = Point { x: 2, y: 3 };
 
-match origin {
+match point {
     Point { y, .. } => println!("y is {}", y),
 }
 ```
 
-This prints `y is 0`.
+This prints `y is 3`.
 
 This ‘destructuring’ behavior works on any compound data type, like
 [tuples][tuples] or [enums][enums].
@@ -163,7 +190,7 @@ ignore parts of a larger structure:
 
 ```rust
 fn coordinate() -> (i32, i32, i32) {
-    // generate and return some sort of triple tuple
+    // Generate and return some sort of triple tuple.
 # (1, 2, 3)
 }
 
@@ -174,7 +201,7 @@ Here, we bind the first and last element of the tuple to `x` and `z`, but
 ignore the middle element.
 
 It’s worth noting that using `_` never binds the value in the first place,
-which means a value may not move:
+which means that the value does not move:
 
 ```rust
 let tuple: (u32, String) = (5, String::from("five"));
@@ -182,7 +209,7 @@ let tuple: (u32, String) = (5, String::from("five"));
 // Here, tuple is moved, because the String moved:
 let (x, _s) = tuple;
 
-// The next line would give "error: use of partially moved value: `tuple`"
+// The next line would give "error: use of partially moved value: `tuple`".
 // println!("Tuple is: {:?}", tuple);
 
 // However,

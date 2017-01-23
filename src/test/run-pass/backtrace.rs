@@ -8,8 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// no-pretty-expanded FIXME #15189
 // ignore-android FIXME #17520
+// ignore-emscripten spawning processes is not supported
+// ignore-openbsd no support for libbacktrace without filename
 // compile-flags:-g
 
 use std::env;
@@ -46,19 +47,7 @@ fn template(me: &str) -> Command {
 }
 
 fn expected(fn_name: &str) -> String {
-    // FIXME(#32481)
-    //
-    // On windows, we read the function name from debuginfo using some
-    // system APIs. For whatever reason, these APIs seem to use the
-    // "name" field, which is only the "relative" name, not the full
-    // name with namespace info, so we just see `foo` and not
-    // `backtrace::foo` as we see on linux (which uses the linkage
-    // name).
-    if cfg!(windows) && cfg!(target_env = "msvc") {
-        format!(" - {}", fn_name)
-    } else {
-        format!(" - backtrace::{}", fn_name)
-    }
+    format!(" - backtrace::{}", fn_name)
 }
 
 fn runtest(me: &str) {
@@ -115,7 +104,7 @@ fn runtest(me: &str) {
 }
 
 fn main() {
-    if cfg!(windows) && cfg!(target_arch = "x86") && cfg!(target_env = "gnu") {
+    if cfg!(windows) && cfg!(target_env = "gnu") {
         return
     }
 

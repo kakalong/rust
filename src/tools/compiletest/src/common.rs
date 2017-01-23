@@ -27,25 +27,31 @@ pub enum Mode {
     Rustdoc,
     CodegenUnits,
     Incremental,
+    RunMake,
+    Ui,
+    MirOpt,
 }
 
 impl FromStr for Mode {
     type Err = ();
     fn from_str(s: &str) -> Result<Mode, ()> {
         match s {
-          "compile-fail" => Ok(CompileFail),
-          "parse-fail" => Ok(ParseFail),
-          "run-fail" => Ok(RunFail),
-          "run-pass" => Ok(RunPass),
-          "run-pass-valgrind" => Ok(RunPassValgrind),
-          "pretty" => Ok(Pretty),
-          "debuginfo-lldb" => Ok(DebugInfoLldb),
-          "debuginfo-gdb" => Ok(DebugInfoGdb),
-          "codegen" => Ok(Codegen),
-          "rustdoc" => Ok(Rustdoc),
-          "codegen-units" => Ok(CodegenUnits),
-          "incremental" => Ok(Incremental),
-          _ => Err(()),
+            "compile-fail" => Ok(CompileFail),
+            "parse-fail" => Ok(ParseFail),
+            "run-fail" => Ok(RunFail),
+            "run-pass" => Ok(RunPass),
+            "run-pass-valgrind" => Ok(RunPassValgrind),
+            "pretty" => Ok(Pretty),
+            "debuginfo-lldb" => Ok(DebugInfoLldb),
+            "debuginfo-gdb" => Ok(DebugInfoGdb),
+            "codegen" => Ok(Codegen),
+            "rustdoc" => Ok(Rustdoc),
+            "codegen-units" => Ok(CodegenUnits),
+            "incremental" => Ok(Incremental),
+            "run-make" => Ok(RunMake),
+            "ui" => Ok(Ui),
+            "mir-opt" => Ok(MirOpt),
+            _ => Err(()),
         }
     }
 }
@@ -53,19 +59,23 @@ impl FromStr for Mode {
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(match *self {
-            CompileFail => "compile-fail",
-            ParseFail => "parse-fail",
-            RunFail => "run-fail",
-            RunPass => "run-pass",
-            RunPassValgrind => "run-pass-valgrind",
-            Pretty => "pretty",
-            DebugInfoGdb => "debuginfo-gdb",
-            DebugInfoLldb => "debuginfo-lldb",
-            Codegen => "codegen",
-            Rustdoc => "rustdoc",
-            CodegenUnits => "codegen-units",
-            Incremental => "incremental",
-        }, f)
+                              CompileFail => "compile-fail",
+                              ParseFail => "parse-fail",
+                              RunFail => "run-fail",
+                              RunPass => "run-pass",
+                              RunPassValgrind => "run-pass-valgrind",
+                              Pretty => "pretty",
+                              DebugInfoGdb => "debuginfo-gdb",
+                              DebugInfoLldb => "debuginfo-lldb",
+                              Codegen => "codegen",
+                              Rustdoc => "rustdoc",
+                              CodegenUnits => "codegen-units",
+                              Incremental => "incremental",
+                              RunMake => "run-make",
+                              Ui => "ui",
+                              MirOpt => "mir-opt",
+                          },
+                          f)
     }
 }
 
@@ -83,8 +93,11 @@ pub struct Config {
     // The rustdoc executable
     pub rustdoc_path: PathBuf,
 
-    // The python executable
-    pub python: String,
+    // The python executable to use for LLDB
+    pub lldb_python: String,
+
+    // The python executable to use for htmldocck
+    pub docck_python: String,
 
     // The llvm FileCheck binary path
     pub llvm_filecheck: Option<PathBuf>,
@@ -102,9 +115,6 @@ pub struct Config {
     // The directory where programs should be built
     pub build_base: PathBuf,
 
-    // Directory for auxiliary libraries
-    pub aux_base: PathBuf,
-
     // The name of the stage being built (stage1, etc)
     pub stage_id: String,
 
@@ -116,6 +126,9 @@ pub struct Config {
 
     // Only run tests that match this filter
     pub filter: Option<String>,
+
+    // Exactly match the filter, rather than a substring
+    pub filter_exact: bool,
 
     // Write out a parseable log of tests that were run
     pub logfile: Option<PathBuf>,
@@ -136,11 +149,20 @@ pub struct Config {
     // Host triple for the compiler being invoked
     pub host: String,
 
-    // Version of GDB
-    pub gdb_version: Option<String>,
+    // Path to / name of the GDB executable
+    pub gdb: Option<String>,
+
+    // Version of GDB, encoded as ((major * 1000) + minor) * 1000 + patch
+    pub gdb_version: Option<u32>,
+
+    // Whether GDB has native rust support
+    pub gdb_native_rust: bool,
 
     // Version of LLDB
     pub lldb_version: Option<String>,
+
+    // Version of LLVM
+    pub llvm_version: Option<String>,
 
     // Path to the android tools
     pub android_cross_path: PathBuf,
@@ -162,4 +184,13 @@ pub struct Config {
 
     // Print one character per test instead of one line
     pub quiet: bool,
+
+    // Configuration for various run-make tests frobbing things like C compilers
+    // or querying about various LLVM component information.
+    pub cc: String,
+    pub cxx: String,
+    pub cflags: String,
+    pub llvm_components: String,
+    pub llvm_cxxflags: String,
+    pub nodejs: Option<String>,
 }
